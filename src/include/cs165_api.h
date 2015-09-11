@@ -23,7 +23,7 @@ SOFTWARE.
 /**
  * EXTRA
  * DataType
- * Flag to mark what type of data is held in the struct.  
+ * Flag to mark what type of data is held in the struct.
  * You can support additional types by including this enum and using void*
  * in place of int* in db_operator simliar to the way IndexType supports
  * additional types.
@@ -54,6 +54,8 @@ typedef enum IndexType {
  * - type, the column index type (see enum index_type)
  * - index, a pointer to the index structure. For SORTED, this points to the
  *       start of the sorted array. For B+Tree, this points to the root node.
+ *       You will need to cast this from void* to the appropriate type when
+ *       working with the index.
  **/
 typedef struct column_index {
     IndexType type;
@@ -77,7 +79,7 @@ typedef struct column_index {
  **/
 typedef struct column {
     char* name;
-    void* data;
+    int* data;
     column_index *index;
 } column;
 
@@ -120,9 +122,7 @@ typedef struct db {
 typedef enum StatusCode {
   /* The operation completed successfully */
   OK,
-  /* There was an error with the call. [We should either: define the common
-   * errors that they will have; have them set errno to an appropriate value;
-   * or have them choose whatever errors they want.]
+  /* There was an error with the call. 
   */
   ERROR,
 } StatusCode;
@@ -142,23 +142,22 @@ typedef enum ComparatorType {
 
 /**
  * A Junction defines the relationship between comparators.
- * In cases where we have more than one comparator, e.g. A.a <= 5 AND B.b > 3,
+ * In cases where we have more than one comparator, e.g. A.a <= 5 AND A.b > 3,
  * A NONE Junction defines the END of a comparator junction.
  *
  * Using the comparator struct defined below, we would represent our example using:
- *     // This represents the sub-component (B.b > 3)
+ *     // This represents the sub-component (A.b > 3)
  *     comparator f_b;
- *     f_b.value = 3;
+ *     f_b.p_val = 3; // Predicate values
  *     f_b.type = GREATER_THAN;
  *     f_b.mode = NONE;
- *     // We can just not set f_b.comparator2
  *
  *     // This represents the entire comparator
  *     comparator f;
  *     f.value = 5;
  *     f.mode = LESS_THAN | EQUAL;
- *     f.comparator2 = f_b;
- * For chains of more than two Juntions, ____ associative: "a | b & c | d"
+ *     f.next_comparator = &f_b;
+ * For chains of more than two Juntions, left associative: "a | b & c | d"
  * evaluated as "(((a | b) & c) | d)".
  **/
 
@@ -174,7 +173,7 @@ typedef enum Junction {
  * See the example in Junction
  **/
 typedef struct comparator {
-    int pivot;
+    int p_val;
     column *col;
     ComparatorType type;
     struct comparator *next_comparator;
