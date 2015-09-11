@@ -94,8 +94,9 @@ void handle_client(int client_socket) {
 
             // 3. Handle request
             char* result = execute_db_operator(query);
-            int response_length = strlen(result) < DEFAULT_MESSAGE_BUFFER_SIZE ?
-                strlen(result) : DEFAULT_MESSAGE_BUFFER_SIZE;
+            int response_length = strlen(result) < DEFAULT_MESSAGE_BUFFER_SIZE
+                                    ? strlen(result)
+                                    : DEFAULT_MESSAGE_BUFFER_SIZE;
             strncpy(send_message.message, result, response_length);
             send_message.message[response_length] = '\0';
 

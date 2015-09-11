@@ -45,6 +45,7 @@ int connect_client() {
     }
 
     remote.sun_family = AF_UNIX;
+    /* TODO: very strange usage of strncpy */
     strncpy(remote.sun_path, SOCK_PATH, strlen(SOCK_PATH) + 1);
     len = strlen(remote.sun_path) + sizeof(remote.sun_family) + 1;
     if (connect(client_socket, (struct sockaddr *)&remote, len) == -1) {
@@ -79,8 +80,10 @@ int main(void)
     // Continuously loop and wait for input. At each iteration:
     // 1. output interactive marker
     // 2. read from stdin until eof.
-    while (printf("%s", prefix), output_str = fgets(send_message.message,
-           DEFAULT_MESSAGE_BUFFER_SIZE, stdin), !feof(stdin)) {
+    while (printf("%s", prefix),
+           output_str = fgets(send_message.message, DEFAULT_MESSAGE_BUFFER_SIZE, stdin),
+           !feof(stdin)) {
+
         if (output_str == NULL) {
             log_err("fgets failed.\n");
             break;
@@ -106,12 +109,10 @@ int main(void)
                         printf("%s\n", recv_message.message);
                     }
                 }
-            }
-            else {
+            } else {
                 if (len < 0) {
                     log_err("Failed to receive message.");
-                }
-                else {
+                } else {
 		    log_info("Server closed connection\n");
 		}
                 exit(1);
