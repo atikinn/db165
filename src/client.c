@@ -24,6 +24,7 @@
 #include "message.h"
 #include "utils.h"
 
+#define DEFAULT_STDIN_BUFFER_SIZE 1024
 
 /**
  * connect_client()
@@ -45,7 +46,6 @@ int connect_client() {
     }
 
     remote.sun_family = AF_UNIX;
-    /* TODO: very strange usage of strncpy since sock_path is terminated*/
     strncpy(remote.sun_path, SOCK_PATH, strlen(SOCK_PATH) + 1);
     len = strlen(remote.sun_path) + sizeof(remote.sun_family) + 1;
     if (connect(client_socket, (struct sockaddr *)&remote, len) == -1) {
@@ -57,20 +57,21 @@ int connect_client() {
     return client_socket;
 }
 
-int main(void) {
+int main(void)
+{
     int client_socket = connect_client();
     if (client_socket < 0) {
         exit(1);
     }
 
-    message_t send_message;
-    message_t recv_message;
+    message send_message;
+    message recv_message;
 
     // Always output an interactive marker at the start of each command if the
     // input is from stdin. Do not output if piped in from file or from other fd
     char* prefix = "";
     if (isatty(fileno(stdin))) {
-        prefix = "db_client> ";
+        prefix = "db_client > ";
     }
 
     char *output_str = NULL;
@@ -79,10 +80,11 @@ int main(void) {
     // Continuously loop and wait for input. At each iteration:
     // 1. output interactive marker
     // 2. read from stdin until eof.
-    while (printf("%s", prefix),
-           output_str = fgets(send_message.message, DEFAULT_MESSAGE_BUFFER_SIZE, stdin),
-           !feof(stdin)) {
+    char read_buffer[DEFAULT_STDIN_BUFFER_SIZE];
+    send_message.payload = read_buffer;
 
+    while (printf("%s", prefix), output_str = fgets(read_buffer,
+           DEFAULT_STDIN_BUFFER_SIZE, stdin), !feof(stdin)) {
         if (output_str == NULL) {
             log_err("fgets failed.\n");
             break;
@@ -90,35 +92,49 @@ int main(void) {
 
         // Only process input that is greater than 1 character.
         // Ignore things such as new lines.
-        // Otherwise, convert to message and send directly to the server.
-        if (strlen(send_message.message) > 1) {
-            if (send(client_socket, &(send_message), sizeof(message_t), 0) == -1) {
-                log_err("Failed to send message.");
+        // Otherwise, convert to message and send the message and the
+        // payload directly to the server.
+        send_message.length = strlen(read_buffer);
+        if (send_message.length > 1) {
+            // Send the message_header, which tells server payload size
+            if (send(client_socket, &(send_message), sizeof(message), 0) == -1) {
+                log_err("Failed to send message header.");
                 exit(1);
             }
 
-            // For now, always wait for server response (even if it is just an OK message)
-            if ((len = recv(client_socket, &(recv_message), sizeof(message_t), 0)) > 0) {
-                if (recv_message.status == OK_WAIT_FOR_RESPONSE) {
-                    if ((len = recv(client_socket, &(recv_message), sizeof(message_t), 0)) > 0) {
-                        int message_length = strlen(recv_message.message);
-                        if (message_length < DEFAULT_MESSAGE_BUFFER_SIZE) {
-                            recv_message.message[message_length] = '\0';
-                        }
-                        printf("%s\n", recv_message.message);
+            // Send the payload (query) to server
+            if (send(client_socket, send_message.payload, send_message.length, 0) == -1) {
+                log_err("Failed to send query payload.");
+                exit(1);
+            }
+
+            // Always wait for server response (even if it is just an OK message)
+            if ((len = recv(client_socket, &(recv_message), sizeof(message), 0)) > 0) {
+                if (recv_message.status == OK_WAIT_FOR_RESPONSE &&
+                    (int) recv_message.length > 0) {
+                    // Calculate number of bytes in response package
+                    int num_bytes = (int) recv_message.length;
+                    char payload[num_bytes + 1];
+
+                    // Receive the payload and print it out
+                    if ((len = recv(client_socket, payload, num_bytes, 0)) > 0) {
+                        payload[num_bytes] = '\0';
+                        printf("%s\n", payload);
                     }
                 }
-            } else {
+            }
+            else {
                 if (len < 0) {
                     log_err("Failed to receive message.");
-                } else {
-		    log_info("Server closed connection\n");
-		}
+                }
+                else {
+		            log_info("Server closed connection\n");
+		        }
                 exit(1);
             }
         }
     }
-
     close(client_socket);
     return 0;
 }
+>>>>>>> 5f72f27c79de45e498964d0ae72ff2435b2377cb
