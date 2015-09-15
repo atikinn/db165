@@ -45,7 +45,7 @@ int connect_client() {
     }
 
     remote.sun_family = AF_UNIX;
-    /* TODO: very strange usage of strncpy */
+    /* TODO: very strange usage of strncpy since sock_path is terminated*/
     strncpy(remote.sun_path, SOCK_PATH, strlen(SOCK_PATH) + 1);
     len = strlen(remote.sun_path) + sizeof(remote.sun_family) + 1;
     if (connect(client_socket, (struct sockaddr *)&remote, len) == -1) {
@@ -57,8 +57,7 @@ int connect_client() {
     return client_socket;
 }
 
-int main(void)
-{
+int main(void) {
     int client_socket = connect_client();
     if (client_socket < 0) {
         exit(1);

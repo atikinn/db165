@@ -111,9 +111,9 @@ typedef struct table {
  * - tables: the pointer to the array of tables contained in the db.
  **/
 typedef struct db {
-    char* name;
+    char *name;
     size_t table_count;
-    table* tables;
+    table *tables;
 } db;
 
 /**
@@ -122,7 +122,7 @@ typedef struct db {
 typedef enum StatusCode {
   /* The operation completed successfully */
   OK,
-  /* There was an error with the call. 
+  /* There was an error with the call.
   */
   ERROR,
 } StatusCode;
@@ -130,7 +130,7 @@ typedef enum StatusCode {
 // status declares an error code and associated message
 typedef struct status {
     StatusCode code;
-    char* error_message;
+    char *error_message;
 } status;
 
 // Defines a comparator flag between two values.
@@ -271,7 +271,7 @@ typedef enum OpenFlags {
  *
  * Note that the database in @filename MUST contain the same name as db->name
  * (if db != NULL). If not, then return an error.
- * 
+ *
  * filename: the name associated with the DB file
  * db      : the pointer to db*
  * flags   : the flags indicating the create/load options
@@ -283,7 +283,7 @@ status open_db(const char* filename, db** db, OpenFlags flags);
  * drop_db(db)
  * Drops the database associated with db.  You should permanently delete
  * the db and all of its tables/columns.
- * 
+ *
  * db       : the database to be dropped.
  * returns  : the status of the operation.
  **/
@@ -292,7 +292,7 @@ status drop_db(db* db);
 /**
  * sync_db(db)
  * Saves the current status of the database to disk.
- * 
+ *
  * db       : the database to sync.
  * returns  : the status of the operation.
  **/
@@ -301,7 +301,7 @@ status sync_db(db* db);
 /**
  * create_db(db_name, db)
  * Creates a database with the given database name, and stores the pointer in db
- * 
+ *
  * db_name  : name of the database, must be unique.
  * db       : pointer to the db pointer. If db == NULL, then create_db is
  *            responsible for allocating a db*, else it should use the given db*
@@ -313,7 +313,7 @@ status create_db(const char* db_name, db** db);
  * create_table(db, name, num_columns, table)
  * Creates a table named @name in @db with @num_columns, and stores the pointer
  * in @table.
- * 
+ *
  * db          : the database in which to create the table.
  * name        : the name of the new table, must be unique in the db.
  * num_columns : the non-negative number of columns in the table.
@@ -328,7 +328,7 @@ status create_table(db* db, const char* name, size_t num_columns, table** table)
  * drop_table(db, table)
  * Drops the table from the db.  You should permanently delete
  * the table and all of its columns.
- * 
+ *
  * db       : the database that contains the table.
  * table    : the table to be dropped.
  * returns  : the status of the operation.
@@ -338,11 +338,11 @@ status drop_table(db* db, table* table);
 /**
  * create_column(table, name, col)
  * Creates a column named @name in @table, and stores the pointer in @col.
- * 
+ *
  * table   : the table in which to create the column.
  * name    : the name of the column, must be unique in the table.
  * col     : the pointer to the column pointer. If col == NULL, then
- *           create_column is responsible for allocating the column*, else it 
+ *           create_column is responsible for allocating the column*, else it
  *           should use the given column*.
  * returns : the status of the operation.
  **/
@@ -352,7 +352,7 @@ status create_column(table *table, const char* name, column** col);
  * create_index(col, type)
  * Creates an index for @col of the given IndexType. It stores the created index
  * in col->index.
- * 
+ *
  * col      : the column for which to create the index.
  * type     : the enum representing the index type to be created.
  * returns  : the status of the operation.
