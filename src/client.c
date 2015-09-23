@@ -83,8 +83,9 @@ int main(void)
     char read_buffer[DEFAULT_STDIN_BUFFER_SIZE];
     send_message.payload = read_buffer;
 
-    while (printf("%s", prefix), output_str = fgets(read_buffer,
-           DEFAULT_STDIN_BUFFER_SIZE, stdin), !feof(stdin)) {
+    while (printf("%s", prefix),
+           output_str = fgets(read_buffer, DEFAULT_STDIN_BUFFER_SIZE, stdin),
+           !feof(stdin)) {
         if (output_str == NULL) {
             log_err("fgets failed.\n");
             break;
@@ -110,8 +111,8 @@ int main(void)
 
             // Always wait for server response (even if it is just an OK message)
             if ((len = recv(client_socket, &(recv_message), sizeof(message), 0)) > 0) {
-                if (recv_message.status == OK_WAIT_FOR_RESPONSE &&
-                    (int) recv_message.length > 0) {
+                if (recv_message.status == OK_WAIT_FOR_RESPONSE
+                    && (int) recv_message.length > 0) {
                     // Calculate number of bytes in response package
                     int num_bytes = (int) recv_message.length;
                     char payload[num_bytes + 1];
@@ -122,14 +123,13 @@ int main(void)
                         printf("%s\n", payload);
                     }
                 }
-            }
-            else {
+            } else {
                 if (len < 0) {
                     log_err("Failed to receive message.");
                 }
                 else {
-		            log_info("Server closed connection\n");
-		        }
+                    log_info("Server closed connection\n");
+                }
                 exit(1);
             }
         }
@@ -137,4 +137,3 @@ int main(void)
     close(client_socket);
     return 0;
 }
->>>>>>> 5f72f27c79de45e498964d0ae72ff2435b2377cb

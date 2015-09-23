@@ -3,16 +3,17 @@
 # Please see example of "utils" to see how to add additional file
 # to your project
 
-all: client server
+all: client server tags
 
 # C-compiler settings
-CC = gcc -std=c99 -g -ggdb3
+CC = gcc -std=c11 -g -ggdb3
 
 # Default optimization level
-O ?= 3
+O ?= 0	#3
 
 # Flags and other libraries
-override CFLAGS += -Wall -Wextra -pedantic -D_FORTIFY_SOURCE -pthread -O$(O) -I$(INCLUDES)
+override CFLAGS += -Wall -Wextra -pedantic -D_FORTIFY_SOURCE -DLOG -DLOG_ERROR \
+					-DLOG_INFO -pthread -O$(O) -I$(INCLUDES)
 LDFLAGS =
 LIBS =
 INCLUDES = include
@@ -54,15 +55,17 @@ $(DEPSDIR)/stamp $(BUILDSTAMP):
 client: client.o utils.o
 	$(CC) $(CFLAGS) $(DEPCFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
 
-server: server.o utils.o 
+server: server.o utils.o
 	$(CC) $(CFLAGS) $(DEPCFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
 
 clean:
-	rm -f client server *.o *~ *.bak core *.core cs165_unix_socket
+	rm -f client server *.o *~ *.bak core *.core cs165_unix_socket tags
 	rm -rf .deps
 
 distclean: clean
 	rm -rf $(DEPSDIR)
 
+tags:
+	ctags -R .
+
 .PHONY: all clean distclean
->>>>>>> 5f72f27c79de45e498964d0ae72ff2435b2377cb

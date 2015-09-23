@@ -34,7 +34,7 @@ SOFTWARE.
 typedef enum DataType {
      INT,
      LONG,
-     // Others??
+     STRING,
 } DataType;
 **/
 
@@ -61,7 +61,7 @@ typedef enum IndexType {
  **/
 typedef struct column_index {
     IndexType type;
-    void* index;
+    void *index;
 } column_index;
 
 /**
@@ -80,8 +80,8 @@ typedef struct column_index {
  * tracked in the table (length).
  **/
 typedef struct column {
-    char* name;
-    int* data;
+    char *name;
+    int *data;
     column_index *index;
 } column;
 
@@ -99,9 +99,9 @@ typedef struct column {
  * - length, the size of the columns in the table.
  **/
 typedef struct table {
-    char* name;
+    const char* name;
     size_t col_count;
-    column* col;
+    column *col;
     size_t length;
 } table;
 
@@ -113,7 +113,7 @@ typedef struct table {
  * - tables: the pointer to the array of tables contained in the db.
  **/
 typedef struct db {
-    char *name;
+    const char *name;
     size_t table_count;
     table *tables;
 } db;
@@ -199,10 +199,21 @@ typedef enum OperatorType {
     SELECT,
     PROJECT,
     HASH_JOIN,
+    MERGE_JOIN,
     INSERT,
     DELETE,
     UPDATE,
     AGGREGATE,
+
+    CREATE_DB,
+    CREATE_TBL,
+    CREATE_COL,
+    CREATE_IDX,
+    TUPLE,
+    SYNC,
+    BULK_LOAD,
+
+    INVALID
 } OperatorType;
 
 /**
@@ -237,10 +248,19 @@ typedef enum OperatorType {
 typedef struct db_operator {
     // Flag to choose operator
     OperatorType type;
+    // current db
+    db *db;
+    // for create db, tbl or col
+    const char *create_name;
+    // for create column
+    bool sorted;
+    // for create table
+    size_t table_size;
+    const char *assign_var; /* for create tbl, col, select, fetch, etc */
 
     // Used for every operator
-    table** tables;
-    column** columns;
+    table *tables;
+    column *columns;
 
     // Internmediaties used for PROJECT, DELETE, HASH_JOIN
     int *pos1;

@@ -23,81 +23,260 @@
 #include <string.h>
 #include <strings.h>
 #include <stdbool.h>
+#include <assert.h>
 
 #include "common.h"
 #include "cs165_api.h"
 #include "message.h"
 #include "utils.h"
+#include "sfhash.h"
 
-typedef int (*cmdptr)(int argc, const char *argv[]);
+static db_operator *cmd_load(int argc, const char **argv);
+static db_operator *cmd_create(int argc, const char **argv);
+static db_operator *cmd_sync(int argc, const char **argv);
+static db_operator *cmd_insert(int argc, const char **argv);
+static db_operator *cmd_rel_insert(int argc, const char **argv);
+static db_operator *cmd_select(int argc, const char **argv);
+static db_operator *cmd_fetch(int argc, const char **argv);
+static db_operator *cmd_tuple(int argc, const char **argv);
+static db_operator *cmd_add(int argc, const char **argv);
+static db_operator *cmd_avg(int argc, const char **argv);
+static db_operator *cmd_delete(int argc, const char **argv);
+static db_operator *cmd_rel_delete(int argc, const char **argv);
+static db_operator *cmd_hashjoin(int argc, const char **argv);
+static db_operator *cmd_mergejoin(int argc, const char **argv);
+static db_operator *cmd_max(int argc, const char **argv);
+static db_operator *cmd_min(int argc, const char **argv);
+static db_operator *cmd_sub(int argc, const char **argv);
+static db_operator *cmd_update(int argc, const char **argv);
 
-struct command {
-    const char *command;
-    const cmdptr funptr;
+typedef db_operator *(*cmdptr)(int, const char**);
+static struct {
+    const char *cmd;
+    cmdptr fnptr;
+} command_map[] = {
+    { "add", cmd_add },
+    { "avg", cmd_avg },
+    { "create", cmd_create },
+    { "delete", cmd_delete },
+    { "fetch", cmd_fetch },
+    { "hashjoin", cmd_hashjoin },
+    { "insert", cmd_insert },
+    { "load", cmd_load },
+    { "max", cmd_max },
+    { "mergejoin", cmd_mergejoin },
+    { "min", cmd_min },
+    { "relational_delete", cmd_rel_delete },
+    { "relational_insert", cmd_rel_insert },
+    { "select", cmd_select },
+    { "sub", cmd_sub },
+    { "sync", cmd_sync },
+    { "tuple", cmd_tuple },
+    { "update", cmd_update },
+    { NULL, NULL }
 };
 
-int cmd_load(int argc, const char *argv[]);
-int cmd_create(int argc, const char *argv[]);
-int cmd_sync(int argc, const char *argv[]);
-int cmd_insert(int argc, const char *argv[]);
-int cmd_rel_insert(int argc, const char *argv[]);
-int cmd_select(int argc, const char *argv[]);
-int cmd_fetch(int argc, const char *argv[]);
-
-status open_db(const char* filename, db** db, OpenFlags flags); // load
-status create_db(const char* db_name, db** db); // create
-status create_table(db* db, const char* name, size_t num_columns, table** table); // tb = create
-status create_column(table *table, const char* name, column** col); // col = create
-status insert(column *col, int data); // insert
-status col_scan(comparator *f, column *col, result **r);
-// tuple
-
-status drop_db(db* db); // drop_db
-status sync_db(db* db); // syng
-status drop_table(db* db, table* table); // drop_table
-status create_index(column* col, IndexType type); // create
-status delete(column *col, int *pos);   // delete
-status update(column *col, int *pos, int new_val); // update
-status index_scan(comparator *f, column *col, result **r);
-
-static const char *commands[] = { "create", "load", "sync", "tuple" };
-
-static const char *ops[] = {
-    "add", "avg", "delete", "fetch", "hashjoin", "insert", "max", "mergejoin",
-    "min", "relational_delete", "relational_insert", "select", "sub","update"
-};
-
-static db *cur_db;
+static db *curdb;
 
 static const char EQUALS = '=';
 static const char OPEN_PAREN = '(';
 static const char CLOSE_PAREN = ')';
+static const char COLON = ',';
+static const char *DB = "db";
+static const char *TBL = "tbl";
+static const char *COL = "col";
+static const char *IDX = "idx";
 
-static message_status check_command(char *req, size_t len) {
-    for (size_t i = 0; commands[i]; i++)
-        if (!strncasecmp(req, commands[i], len))
-            return OK_DONE;
-    return OK_WAIT_FOR_RESPONSE;
+static int count_ch(const char *str, char ch) {
+    int count = 0;
+    for (; *str; count += (*str++ == ch)) ;
+    return count;
 }
 
-static message_status parse_request(char *req) {
-    char *open_paren = strchr(req, OPEN_PAREN);
-    char *eq = strchr(req, EQUALS);
-    char *start = req;
-    size_t len;
-    if (eq) {
-        start = eq + 1;
-        len = open_paren - start;
-    } else {
-        len = open_paren - start;
+static const char **tokenize_args(char *msg, int num_args) {
+    char *start = strchr(msg, OPEN_PAREN) + 1;
+    char *end = strchr(msg, CLOSE_PAREN);
+    *end = '\0';
+    const char **args_arr = malloc(num_args * sizeof(void *) + 1);
+    int i = 0;
+    for (char *tmp, *arg = strtok_r(start, &COLON, &tmp); arg;
+         arg = strtok_r(NULL, &COLON, &tmp), i++) {
+        args_arr[i] = arg;
     }
-    return OK_DONE;
+    args_arr[i] = NULL;
+    return args_arr;
 }
 
-static void fill_message(message *msg, message_status st, char *error) {
-    msg->status = st;
-    //snprintf(msg->payload, sizeof(DEFAULT_MESSAGE_BUFFER_SIZE), "%s", error);
+static size_t get_cmd_len(char *payload) {
+    char *eq = strchr(payload, EQUALS);
+    char *open_paren = strchr(payload, OPEN_PAREN);
+    return eq ? open_paren - (eq + 1) : open_paren - payload;
 }
+
+static cmdptr get_cmdptr(char *req, size_t len) {
+    for (size_t i = 0; i < sizeof command_map; i++)
+        if (!strncasecmp(req, command_map[i].cmd, len))
+            return command_map[i].fnptr;
+    return NULL;
+}
+
+static db *select_db(const char *db_name) {
+    (void)db_name;
+    //TODO: get the db from vector of db
+    return curdb;
+}
+
+const int VAR_MAP_SIZE = 1024;
+static struct { size_t len; char *data; } *var_map[VAR_MAP_SIZE];
+
+static char *map_get(const char *var) {
+    size_t idx = super_fast_hash(var, strlen(var));
+    //var_map[idx]
+    return NULL;
+}
+
+static db_operator *cmd_create_db(const char *db_name) {
+    db_operator *dbo = malloc(sizeof *dbo);
+    if (dbo == NULL) return NULL;
+    dbo->type = CREATE_DB;
+    dbo->create_name = strdup(db_name);
+    return dbo;
+}
+
+static db_operator *cmd_create_tbl(const char *db_name, const char *tbl_name, int size) {
+    db_operator *dbo = malloc(sizeof *dbo);
+    if (dbo == NULL) return NULL;
+    dbo->type = CREATE_TBL;
+    dbo->create_name = strdup(tbl_name);
+    dbo->db = select_db(db_name);
+    dbo->table_size = size;
+    return dbo;
+}
+
+static bool should_be_sorted(const char *str) {
+    if (!strcmp(str, "sorted")) return true;
+    if (!strcmp(str, "unsorted")) return false;
+    return false;
+}
+
+static db_operator *cmd_create_column(table *tbl, const char *col_name, const char *sorted) {
+    db_operator *dbo = malloc(sizeof *dbo);
+    if (dbo == NULL) return NULL;
+    dbo->type = CREATE_COL;
+    dbo->create_name = strdup(col_name);
+    dbo->sorted = should_be_sorted(sorted);
+    dbo->tables = tbl;
+    return dbo;
+}
+
+static db_operator *cmd_rel_insert(int argc, const char **argv) {
+    db_operator *dbo = malloc(sizeof *dbo);
+    if (dbo == NULL) return NULL;
+    dbo->type = INSERT;
+    dbo->value1 = malloc(sizeof(int) * argc-1);
+    dbo->tables = map_get(argv[0]);
+    assert(dbo->value1);
+    for (int i = 1; i < argc; i++)
+        dbo->value1[i] = strtol(argv[i], NULL, 10);
+    return dbo;
+}
+
+static OperatorType get_create_type(const char *type) {
+    if (!strcmp(type, DB)) return CREATE_DB;
+    if (!strcmp(type, TBL)) return CREATE_TBL;
+    if (!strcmp(type, COL)) return CREATE_COL;
+    if (!strcmp(type, IDX)) return CREATE_IDX;
+    return INVALID;
+}
+
+static db_operator *cmd_create(int argc, const char **argv) {
+    (void)argc;
+    table *tbl;
+    switch(get_create_type(argv[0])) {
+        case CREATE_DB:
+            return cmd_create_db(argv[0]);
+        case CREATE_TBL:
+            return cmd_create_tbl(argv[2], argv[1], strtol(argv[3], NULL, 10));
+        case CREATE_COL:
+            tbl = map_get(argv[2]);
+            return cmd_create_column(tbl, argv[1], argv[3]);
+        case CREATE_IDX: break;
+        default: break;
+    }
+    return NULL;
+}
+
+static db_operator *cmd_tuple(int argc, const char **argv) {
+    (void)argc;
+    (void)argv;
+    return NULL;
+}
+static db_operator *cmd_select(int argc, const char **argv) {
+    (void)argc;
+    (void)argv;
+    return NULL;
+}
+static db_operator *cmd_fetch(int argc, const char **argv) {
+    (void)argc;
+    (void)argv;
+    return NULL;
+}
+
+/* Execution */
+/*
+status create_table(db* db, const char* name, size_t num_columns, table** table) {
+    *table = malloc(sizeof **table);
+    if (*table == NULL) {
+        status s = { ERROR, "out of memory" };
+        return s;
+    }
+    (*table)->name = strdup(name);
+    (*table)->col_count = num_columns;
+    (*table)->col = NULL;
+    (*table)->length = 0;
+    // TODO: factor out into a separate function db_add_table
+    db->tables = table;
+    db->table_count++;
+    status s = { OK, NULL };
+    return s;
+}
+
+status create_column(table *table, const char* name, column** col) {
+    *col = malloc(sizeof **col);
+    if (*col == NULL) {
+        status s = { ERROR, "out of memory" };
+        return s;
+    }
+    (*col)->name = strdup(name);
+    (*col)->data = NULL;
+    (*col)->index = NULL;
+    // TODO: factor out into a separate function table_add_col
+    table->col_count++;
+    table->col = col;
+
+    status s = { OK, NULL };
+    return s;
+}
+
+status create_db(const char *db_name, db **db) {
+    *db = malloc(sizeof **db);
+    if (*db == NULL) {
+        status s = { ERROR, "out of memory" };
+        return s;
+    }
+    (*db)->name = strdup(db_name);
+    (*db)->table_count = 0;
+    (*db)->tables = NULL;
+    status s = { OK, NULL };
+    db_set_current(*db);
+    return s;
+}
+
+static void db_set_current(db *db) {
+    curdb = db;
+    return;
+}
+*/
 
 /**
  * parse_command takes as input the send_message from the client and then
@@ -106,29 +285,47 @@ static void fill_message(message *msg, message_status st, char *error) {
  * Returns a db_operator.
  **/
 db_operator *parse_command(message *recv_message, message *send_message) {
-    send_message->status = OK_WAIT_FOR_RESPONSE;
-    db_operator *dbo = malloc(sizeof(db_operator));
-
-    parse_request(recv_message->payload);
-
-    // TODO: load, create, tuple are not db opearators
-    // TODO: relational_insert, select, fetch is db operator
-
-
-//open_db(const char* filename, db** db, OpenFlags flags); load
-//create_db(const char* db_name, db** db); create
-//create_table(db* db, const char* name, size_t num_columns, table** table); tb = create
-//create_column(table *table, const char* name, column** col); col = create
-
-    // fill in the proper db_operator fields for now we just log the message
     cs165_log(stdout, recv_message->payload);
 
+    db_operator *dbo = NULL;
+    int argc = count_ch(recv_message->payload, COLON) + 1;
+    const char **argv = tokenize_args(recv_message->payload, argc);
+    size_t len = get_cmd_len(recv_message->payload);
+    cmdptr fn = get_cmdptr(recv_message->payload, len);
+    if (!fn) {  // should never happen
+        send_message->status = UNKNOWN_COMMAND;
+        goto out;
+    }
+    dbo = fn(argc, argv);
+    if (dbo == NULL) { // should never happen
+        send_message->status = INTERNAL_ERROR;
+        goto out;
+    }
+    send_message->status = OK_WAIT_FOR_RESPONSE;
+out:
+    free(argv);
     return dbo;
-
-err:
-    free(dbo);
-    return NULL;
 }
+
+/* TODO delete later
+static char *get_send_msg(const char *cmd, message_status status) {
+    switch(status) {
+        case OK_WAIT_FOR_RESPONSE:
+            if (!strcmp(cmd, "create")) return "created";
+            if (!strcmp(cmd, "load")) return "loaded";
+            if (!strcmp(cmd, "sync")) return "synched";
+            if (!strcmp(cmd, "tuple")) return "TODO";
+            return "";
+        case UNKNOWN_COMMAND: return "unknown";
+        case INCORRECT_FORMAT: return "incorrect";
+        case OK_DONE: return "done";
+    }
+}
+*/
+    /*
+    for (const char *arg = *argv; arg; arg = *(++argv))
+        cs165_log(stderr, "%s\n", arg);
+    */
 
 /** execute_db_operator takes as input the db_operator and executes the query.
  * It should return the result (currently as a char*, although I'm not clear
@@ -137,7 +334,7 @@ err:
  **/
 char *execute_db_operator(db_operator *query) {
     free(query);
-    return "165";
+    return "created_db";
 }
 
 /**
@@ -152,7 +349,7 @@ void handle_client(int client_socket) {
     log_info("Connected to socket: %d.\n", client_socket);
 
     // Create two messages, one from which to read and one from which to receive
-    message send_message;
+    message send_message = {0, 0, 0};
     message recv_message;
 
     // Continually receive messages from client and execute queries.
@@ -170,6 +367,11 @@ void handle_client(int client_socket) {
         }
 
         if (!done) {
+            char recv_buffer[recv_message.length];
+            length = recv(client_socket, recv_buffer, recv_message.length, 0);
+            recv_message.payload = recv_buffer;
+            recv_message.payload[recv_message.length] = '\0';
+
             // 1. Parse command
             db_operator *query = parse_command(&recv_message, &send_message);
 
@@ -267,3 +469,68 @@ int main(void)
     return 0;
 }
 
+static db_operator *cmd_avg(int argc, const char **argv) {
+    (void)argc;
+    (void)argv;
+    return NULL;
+}
+static db_operator *cmd_delete(int argc, const char **argv) {
+    (void)argc;
+    (void)argv;
+    return NULL;
+}
+static db_operator *cmd_min(int argc, const char **argv) {
+    (void)argc;
+    (void)argv;
+    return NULL;
+}
+static db_operator *cmd_max(int argc, const char **argv) {
+    (void)argc;
+    (void)argv;
+    return NULL;
+}
+static db_operator *cmd_load(int argc, const char **argv) {
+    (void)argc;
+    (void)argv;
+    return NULL;
+}
+static db_operator *cmd_sync(int argc, const char **argv) {
+    (void)argc;
+    (void)argv;
+    return NULL;
+}
+static db_operator *cmd_hashjoin(int argc, const char **argv) {
+    (void)argc;
+    (void)argv;
+    return NULL;
+}
+static db_operator *cmd_mergejoin(int argc, const char **argv) {
+    (void)argc;
+    (void)argv;
+    return NULL;
+}
+static db_operator *cmd_insert(int argc, const char **argv) {
+    (void)argc;
+    (void)argv;
+    return NULL;
+}
+static db_operator *cmd_rel_delete(int argc, const char **argv) {
+    (void)argc;
+    (void)argv;
+    return NULL;
+}
+static db_operator *cmd_sub(int argc, const char **argv) {
+    (void)argc;
+    (void)argv;
+    return NULL;
+}
+static db_operator *cmd_update(int argc, const char **argv) {
+    (void)argc;
+    (void)argv;
+    return NULL;
+}
+static db_operator *cmd_add(int argc, const char **argv) {
+    (void)argc;
+    (void)argv;
+    return NULL;
+}
