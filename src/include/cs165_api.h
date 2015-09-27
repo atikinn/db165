@@ -21,6 +21,7 @@ SOFTWARE.
 #define CS165_H
 
 #include <stdlib.h>
+#include <stdbool.h>
 
 /**
  * EXTRA
@@ -79,11 +80,15 @@ typedef struct column_index {
  * columns in a table should share the same length. Instead, this is
  * tracked in the table (length).
  **/
-typedef struct column {
-    char *name;
+typedef struct column column;
+typedef struct table table;
+
+struct column {
+    const char *name;
+    struct table *table;
     int *data;
     column_index *index;
-} column;
+};
 
 /**
  * table
@@ -98,12 +103,12 @@ typedef struct column {
  * - col, this is the pointer to an array of columns contained in the table.
  * - length, the size of the columns in the table.
  **/
-typedef struct table {
-    const char* name;
+struct table {
+    const char *name;
     size_t col_count;
-    column *col;
+    struct column *col;
     size_t length;
-} table;
+};
 
 /**
  * db
@@ -115,6 +120,7 @@ typedef struct table {
 typedef struct db {
     const char *name;
     size_t table_count;
+    size_t capacity;
     table *tables;
 } db;
 
@@ -124,63 +130,15 @@ typedef struct db {
 typedef enum StatusCode {
   /* The operation completed successfully */
   OK,
-  /* There was an error with the call.
-  */
+  /* There was an error with the call. */
   ERROR,
 } StatusCode;
 
 // status declares an error code and associated message
 typedef struct status {
     StatusCode code;
-    char *error_message;
+    const char *message;
 } status;
-
-// Defines a comparator flag between two values.
-typedef enum ComparatorType {
-    LESS_THAN = 1,
-    GREATER_THAN = 2,
-    EQUAL = 4,
-} ComparatorType;
-
-/**
- * A Junction defines the relationship between comparators.
- * In cases where we have more than one comparator, e.g. A.a <= 5 AND A.b > 3,
- * A NONE Junction defines the END of a comparator junction.
- *
- * Using the comparator struct defined below, we would represent our example using:
- *     // This represents the sub-component (A.b > 3)
- *     comparator f_b;
- *     f_b.p_val = 3; // Predicate values
- *     f_b.type = GREATER_THAN;
- *     f_b.mode = NONE;
- *
- *     // This represents the entire comparator
- *     comparator f;
- *     f.value = 5;
- *     f.mode = LESS_THAN | EQUAL;
- *     f.next_comparator = &f_b;
- * For chains of more than two Juntions, left associative: "a | b & c | d"
- * evaluated as "(((a | b) & c) | d)".
- **/
-
-typedef enum Junction {
-    NONE,
-    OR,
-    AND,
-} Junction;
-
-/**
- * comparator
- * A comparator defines one or more comparasons.
- * See the example in Junction
- **/
-typedef struct comparator {
-    int p_val;
-    column *col;
-    ComparatorType type;
-    struct comparator *next_comparator;
-    Junction mode;
-} comparator;
 
 typedef struct result {
     size_t num_tuples;
@@ -195,8 +153,22 @@ typedef enum Aggr {
     CNT,
 } Aggr;
 
+typedef enum create {
+    CREATE_DB,
+    CREATE_TBL,
+    CREATE_COL,
+    CREATE_IDX,
+    CREATE_INVALID
+} create_enum;
+
+typedef enum varType {
+  TABLE,
+  COLUMN,
+  INTVEC,
+} varType;
+
 typedef enum OperatorType {
-    SELECT,
+    SELECT = 1,
     PROJECT,
     HASH_JOIN,
     MERGE_JOIN,
@@ -205,10 +177,7 @@ typedef enum OperatorType {
     UPDATE,
     AGGREGATE,
 
-    CREATE_DB,
-    CREATE_TBL,
-    CREATE_COL,
-    CREATE_IDX,
+    CREATE,
     TUPLE,
     SYNC,
     BULK_LOAD,
@@ -248,6 +217,10 @@ typedef enum OperatorType {
 typedef struct db_operator {
     // Flag to choose operator
     OperatorType type;
+    // Create type
+    enum create create_type;
+    // This includes several possible fields that may be used in the operation.
+    Aggr agg;
     // current db
     db *db;
     // for create db, tbl or col
@@ -256,31 +229,33 @@ typedef struct db_operator {
     bool sorted;
     // for create table
     size_t table_size;
-    const char *assign_var; /* for create tbl, col, select, fetch, etc */
+    /* for create tbl, col, select, fetch, etc */
+    const char *assign_var;
+    struct {
+      int low;
+      int high;
+    } range;
 
-    // Used for every operator
+    // Used for every(?) operator
     table *tables;
     column *columns;
 
-    // Internmediaties used for PROJECT, DELETE, HASH_JOIN
-    int *pos1;
+    // Internmediaties used for FETCH/PROJECT, DELETE, HASH_JOIN
+    result *pos1;
     // Needed for HASH_JOIN
-    int *pos2;
+    result *pos2;
+    // Needed for tuple
+    int **vecs;
 
     // For insert/delete operations, we only use value1;
     // For update operations, we update value1 -> value2;
     int *value1;
     int *value2;
-
-    // This includes several possible fields that may be used in the operation.
-    Aggr agg;
-    comparator* c;
-
 } db_operator;
 
 typedef enum OpenFlags {
-    CREATE = 1,
-    LOAD = 2,
+    FILE_CREATE = 1,
+    FILE_LOAD = 2,
 } OpenFlags;
 
 /* OPERATOR API*/
@@ -337,7 +312,7 @@ status sync_db(db* db);
  *      // Something went wrong
  *  }
  **/
-status create_db(const char* db_name, db** db);
+//status create_db(const char* db_name, db** db);
 
 /**
  * create_table(db, name, num_columns, table)
@@ -360,7 +335,7 @@ status create_db(const char* db_name, db** db);
  *      // Something went wrong
  *  }
  **/
-status create_table(db* db, const char* name, size_t num_columns, table** table);
+//status create_table(db* db, const char* name, size_t num_columns, table** table);
 
 /**
  * drop_table(db, table)
@@ -392,7 +367,7 @@ status drop_table(db* db, table* table);
  *      // Something went wrong
  *  }
  **/
-status create_column(table *table, const char* name, column** col);
+//status create_column(table *table, const char* name, column** col);
 
 /**
  * create_index(col, type)
@@ -405,15 +380,14 @@ status create_column(table *table, const char* name, column** col);
  **/
 status create_index(column* col, IndexType type);
 
-status insert(column *col, int data);
+//status insert(column *col, int data);
 status delete(column *col, int *pos);
 status update(column *col, int *pos, int new_val);
-status col_scan(comparator *f, column *col, result **r);
-status index_scan(comparator *f, column *col, result **r);
+//status col_scan(int low, int high, column *col, result **r);
+//status col_scan(comparator *f, column *col, result **r);
+//status index_scan(comparator *f, column *col, result **r);
 
 /* Query API */
-status query_prepare(const char* query, db_operator** op);
-status query_execute(db_operator* op, result** results);
 
 
 #endif /* CS165_H */
