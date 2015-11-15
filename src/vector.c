@@ -16,10 +16,10 @@ bool vector_init(struct vec *v, size_t capacity) {
 bool vector_resize(struct vec *v) {
     int capacity = v->capacity * 2;
     int *pos = realloc(v->pos, sizeof(int) * capacity);
-    if (pos == NULL) return true;
+    if (pos == NULL) return false;
     v->capacity = capacity;
     v->pos = pos;
-    return false;
+    return true;
 }
 
 unsigned int vector_append(struct vec *v, int item) {

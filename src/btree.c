@@ -1,10 +1,12 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <string.h>
 #include <assert.h>
 #include <math.h>
 #include "vector.h"
 #include "btree.h"
+#include "bset.h"
 
 /*
 #define DEGREE 2
@@ -13,39 +15,26 @@
 #define MINKEYS (DEGREE - 1)
 */
 
-#define ORDER 2
+#define ORDER 10
 #define MAXKEYS (ORDER * 2)
 #define FANOUT (MAXKEYS + 1)
-
-enum btnode_type { INTERNAL = 1, LEAF };
-enum values_type { ID = 1, IDREF };
-
-// sizeof = 4 * (MAXKEYS + 1) + 16 * FANOUT
-// sizeof = 4 * (MAXKEYS + 1) + 16 * (MAXKEYS + 1)
-// sizeof = 20 * (MAXKEYS + 1)
-// sizeof = 20 * (2 * ORDER + 1)
-// sizeof = 20 + 40 ORDER
-// ORDER  2 => 100 => 104 => 2 cache lines
-// ORDER  3 => 160  => 2.5 cache lines => 3 cache lines
-// ORDER 10 => 420 => 424 => 7 cache lines
-// ORDER 100 => 4024 => 63 cache lines
-// ORDER 101 => 4060 => 64 cache lines
+#define FANOUTSET (((FANOUT + 63) & ~(63))/64)
 
 // can do
 // sizeof 32 + 24 ORDER
 // ORDER 169 => 64 cache lines
 
+enum btnode_type { INTERNAL = 1, LEAF };
+
 struct btnode {
     enum btnode_type ntype;
     short ksz;
     int keys[MAXKEYS];
-    struct value {
-        enum values_type vtype;
-        union {
-            struct btnode *child;
-            unsigned int id;
-            struct vec *ids;
-        };
+    bset idref[FANOUTSET];  // only used in leafs to distinguish between id and ids
+    union value {
+	struct btnode *child;
+	unsigned int id;
+	struct vec *ids;
     } values[FANOUT];
 };
 
@@ -61,6 +50,7 @@ struct btnode *allocate_btnode(enum btnode_type type) {
     struct btnode *node = malloc(sizeof *node);
     node->ntype = type;
     node->ksz = 0;
+    memset(node->idref, 0, sizeof node->idref);
     return node;
 }
 
@@ -90,14 +80,13 @@ void traverse_bt(struct btnode *x) {
     } else {
 	for (int j = 0; j < x->ksz; j++) {
 	    fprintf(stderr, "%d (", x->keys[j]);
-	    switch (x->values[j].vtype) {
-		case ID: fprintf(stderr, " %d ", x->values[j].id); break;
-		case IDREF:
-		    for (int i = 0; i < x->values[j].ids->sz; i++)
-			fprintf(stderr, " %d ", x->values[j].ids->pos[i]);
-		    break;
+	    if (bset_isset(x->idref, j)) {
+		for (int i = 0; i < x->values[j].ids->sz; i++)
+		    fprintf(stderr, " %d ", x->values[j].ids->pos[i]);
+	    } else {
+		fprintf(stderr, " %d ", x->values[j].id);
 	    }
-	    fprintf(stderr, ")");
+	    fprintf(stderr, ") ");
 	}
 	fprintf(stderr, "\n");
     }
@@ -111,7 +100,7 @@ void btree_traverse(struct btree *bt) {
 
 static inline
 struct vec *get_vector(struct btnode *node, int i) {
-    if (node->values[i].vtype == IDREF) {
+    if (bset_isset(node->idref, i)) {
 	return node->values[i].ids;
     } else {
 	struct vec *v = vector_create(1);
@@ -159,7 +148,7 @@ struct vec *btree_search(struct btree *bt, int k) {
 //////////////////////////////////////////////////////////////////////////////
 
 static inline
-int array_insert(int *a, int lo, int hi, int k) {
+int key_insert(int *a, int lo, int hi, int k) {
     a[hi] = k;
     int j = hi;
     for (; j > lo && a[j] < a[j-1]; j--) {
@@ -171,12 +160,12 @@ int array_insert(int *a, int lo, int hi, int k) {
 }
 
 static inline
-int insert_id_atpos(struct value *a, int lo, int hi, int v) {
-    struct value i = { ID, .id = v };
+int insert_id_atpos(union value *a, int lo, int hi, int v) {
+    union value i = { .id = v };
     a[hi] = i;
     int j = hi;
     for (; j > lo; j--) {
-        struct value swap = a[j];
+        union value swap = a[j];
         a[j] = a[j-1];
         a[j-1] = swap;
     }
@@ -184,12 +173,12 @@ int insert_id_atpos(struct value *a, int lo, int hi, int v) {
 }
 
 static inline
-int insert_ptr_atpos(struct value *a, int lo, int hi, struct btnode *p) {
-    struct value v = { ID, .child = p };
+int insert_ptr_atpos(union value *a, int lo, int hi, struct btnode *p) {
+    union value v = { .child = p };
     a[hi] = v;
     int j = hi;
     for (; j > lo; j--) {
-        struct value swap = a[j];
+        union value swap = a[j];
         a[j] = a[j-1];
         a[j-1] = swap;
     }
@@ -197,16 +186,16 @@ int insert_ptr_atpos(struct value *a, int lo, int hi, struct btnode *p) {
 }
 
 static inline
-void insert_id(struct value *x, int id) {
-    if (x->vtype == IDREF) {
+void insert_id(union value *x, int id, bool idref) {
+    if (idref) {
 	vector_append(x->ids, id);
-    } else {
-	struct vec *v = vector_create(2);
-	vector_append(v, x->id);
-	vector_append(v, id);
-	x->ids = v;
-	x->vtype = IDREF;
+	return;
     }
+
+    struct vec *v = vector_create(2);
+    vector_append(v, x->id);
+    vector_append(v, id);
+    x->ids = v;
 }
 
 static inline
@@ -214,60 +203,47 @@ void leaf_insert(struct btnode *x, int k, int id) {
     int kidx = indexOf(k, x->keys, x->ksz);
     //fprintf(stderr, "leaf_insert: %d = %d, %d, %d\n", k, id, kidx, x->ksz);
     if (kidx == -1) {
-	kidx = array_insert(x->keys, 0, x->ksz, k);
+	kidx = key_insert(x->keys, 0, x->ksz, k);
 	insert_id_atpos(x->values, kidx, x->ksz, id);
 	x->ksz++;
+	bset_insert0(x->idref, kidx, FANOUTSET);
 	//print_vec(x->keys, x->ksz);
     } else {	// key exists, only add value
 	//fprintf(stderr, "key %d exists at %d = %d\n", k, kidx, x->keys[kidx]);
-	insert_id(&x->values[kidx], id);
+	bool idref = bset_isset(x->idref, kidx);
+	insert_id(&x->values[kidx], id, idref);
+	if (!idref) bset_set(x->idref, kidx);
     }
 }
 
 static inline
-void node_insert(struct btnode *x, int pivot, struct btnode *p) {
-    int pidx = array_insert(x->keys, 0, x->ksz, pivot);
-    x->ksz++; // NB: important to increment before calling insert_ptr_atpos
-    insert_ptr_atpos(x->values, pidx+1, x->ksz, p);
-}
-
-static inline
-struct insert_pair node_split(struct btnode *full) {
+struct insert_pair leaf_split(struct btnode *full) {
     struct btnode *sibling = allocate_btnode(full->ntype);
 
     double fullksz = full->ksz;
-    if (full->ntype == LEAF) {
-	full->ksz = (int) floor(fullksz / 2);
-	sibling->ksz = (int) ceil(fullksz / 2);
+    full->ksz = (int) floor(fullksz / 2);
+    sibling->ksz = (int) ceil(fullksz / 2);
 
-	for (int j = 0; j < sibling->ksz; j++)
-	    sibling->keys[j] = full->keys[j + full->ksz];
-	for (int j = 0; j < sibling->ksz; j++)
-	    sibling->values[j] = full->values[j + full->ksz];
+    for (int j = 0; j < sibling->ksz; j++)
+	sibling->keys[j] = full->keys[j + full->ksz];
+    for (int j = 0; j < sibling->ksz; j++)
+	sibling->values[j] = full->values[j + full->ksz];
 
-	full->values[FANOUT-1].child = sibling;
-	struct insert_pair ret = { sibling, sibling->keys[0] };
-	return ret;
-    } else {
-	full->ksz = (int) floor(fullksz / 2);
-	sibling->ksz = (int) ceil(fullksz / 2) - 1;
+    bset rset[FANOUTSET] = {0};
+    for (int j = 0; j < sibling->ksz; j++)
+	if (bset_isset(full->idref, j + full->ksz))
+	    bset_set(sibling->idref, j);
 
-	for (int j = 0; j < sibling->ksz; j++)
-	    sibling->keys[j] = full->keys[j + full->ksz+1];
-	for (int j = 0; j < sibling->ksz+1; j++)
-	    sibling->values[j] = full->values[j + full->ksz+1];
-	struct insert_pair ret = { sibling, full->keys[full->ksz] };
-	return ret;
-    }
-
-    //fprintf(stderr, "node_split: %d\n", sibling->keys[0]);
+    full->values[FANOUT-1].child = sibling;
+    struct insert_pair ret = { sibling, sibling->keys[0] };
+    return ret;
 }
 
 static inline
 struct insert_pair insert_leaf_helper(struct btnode *node, int k, int id) {
     struct insert_pair null = {};
     if (node->ksz == MAXKEYS) {
-	struct insert_pair split_result = node_split(node);
+	struct insert_pair split_result = leaf_split(node);
 	//fprintf(stderr, "insert_leaf_helper: %d\n", split_result.sibling->ksz);
 	if (k < split_result.pivot)
 	    leaf_insert(node, k, id);
@@ -278,6 +254,30 @@ struct insert_pair insert_leaf_helper(struct btnode *node, int k, int id) {
 	leaf_insert(node, k, id);
 	return null;
     }
+}
+
+static inline
+void node_insert(struct btnode *x, int pivot, struct btnode *p) {
+    int pidx = key_insert(x->keys, 0, x->ksz, pivot);
+    x->ksz++; // NB: important to increment before calling insert_ptr_atpos
+    insert_ptr_atpos(x->values, pidx+1, x->ksz, p);
+}
+
+static inline
+struct insert_pair node_split(struct btnode *full) {
+    struct btnode *sibling = allocate_btnode(full->ntype);
+
+    double fullksz = full->ksz;
+    full->ksz = (int) floor(fullksz / 2);
+    sibling->ksz = (int) ceil(fullksz / 2) - 1;
+
+    for (int j = 0; j < sibling->ksz; j++)
+	sibling->keys[j] = full->keys[j + full->ksz+1];
+    for (int j = 0; j < sibling->ksz+1; j++)
+	sibling->values[j] = full->values[j + full->ksz+1];
+
+    struct insert_pair ret = { sibling, full->keys[full->ksz] };
+    return ret;
 }
 
 static inline
@@ -337,7 +337,7 @@ void btree_insert(struct btree *bt, int k, int id) {
 	root->values[root->ksz].child = p.sibling;
 	bt->root = root;
 	//print_vec(p.sibling->keys, p.sibling->ksz);
-	fprintf(stderr, "new root: ");
+	//fprintf(stderr, "new root: ");
 	print_vec(root->keys, root->ksz);
     }
     bt->size++;
