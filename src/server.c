@@ -27,13 +27,40 @@
 #include "common.h"
 #include "message.h"
 #include "utils.h"
-#include "parser.h"
+#include "parse.h"
 #include "execute.h"
 
 #define DEFAULT_QUERY_BUFFER_SIZE 1024
 /*
 for (const char *arg = *argv; arg; arg = *(++argv))
     cs165_log(stderr, "%s\n", arg);
+*/
+
+// Here, we allow for a global of DSL COMMANDS to be shared in the program
+//dsl** dsl_commands;
+
+/**
+ * parse_command takes as input the send_message from the client and then
+ * parses it into the appropriate query. Stores into send_message the
+ * status to send back.
+ * Returns a db_operator.
+ **/
+/*
+db_operator* parse_command(message* recv_message, message* send_message) {
+    send_message->status = OK_WAIT_FOR_RESPONSE;
+    db_operator *dbo = malloc(sizeof(db_operator));
+    // Here you parse the message and fill in the proper db_operator fields for
+    // now we just log the payload
+    cs165_log(stdout, recv_message->payload);
+
+    // Here, we give you a default parser, you are welcome to replace it with anything you want
+    status parse_status = parse_command_string(recv_message->payload, dsl_commands, dbo);
+    if (parse_status.code != OK) {
+        // Something went wrong
+    }
+
+    return dbo;
+}
 */
 
 /**
@@ -152,7 +179,10 @@ int main(void)
         exit(1);
     }
 
-    log_info("Waiting for a connection %d ...\n", 10);
+    // Populate the global dsl commands
+    //dsl_commands = dsl_commands_init();
+
+    log_info("Waiting for a connection %d ...\n", server_socket);
 
     struct sockaddr_un remote;
     socklen_t t = sizeof(remote);

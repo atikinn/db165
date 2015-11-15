@@ -13,7 +13,7 @@ O ?= 0	#3
 
 # Flags and other libraries
 override CFLAGS += -Wall -Wextra -pedantic -D_FORTIFY_SOURCE -DLOG -DLOG_ERROR \
-					-DLOG_INFO -pthread -O$(O) -I$(INCLUDES)
+					-DLOG_INFO -pthread -O$(O) -I$(INCLUDES) -D _GNU_SOURCE
 LDFLAGS =
 LIBS =
 INCLUDES = include
@@ -55,8 +55,8 @@ $(DEPSDIR)/stamp $(BUILDSTAMP):
 client: client.o utils.o
 	$(CC) $(CFLAGS) $(DEPCFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
 
-server: server.o utils.o
-	$(CC) $(CFLAGS) $(DEPCFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
+server: server.o dbo.o parse.o utils.o symtable.o execute.o operator.o
+	$(CC) $(CFLAGS) $(DEPCFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS) $(MACROS)
 
 clean:
 	rm -f client server *.o *~ *.bak core *.core cs165_unix_socket tags

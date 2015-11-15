@@ -240,7 +240,7 @@ typedef struct db_operator {
     table *tables;
     column *columns;
 
-    // Internmediaties used for FETCH/PROJECT, DELETE, HASH_JOIN
+    // Internmediaties used for FETCH/PROJECT, SELECT, DELETE, HASH_JOIN
     result *pos1;
     // Needed for HASH_JOIN
     result *pos2;
