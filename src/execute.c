@@ -5,64 +5,131 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <string.h>
 
-#include "parser.h"
+#include "parse.h"
 #include "symtable.h"
 #include "dbo.h"
 #include "message.h"
+#include "utils.h"
+#include "vector.h"
 
-static status create_db(const char *db_name, db **db) {
-    *db = malloc(sizeof **db);
-    if (*db == NULL) {
-        status s = { ERROR, "out of memory" };
-        return s;
-    }
-    (*db)->name = db_name;
-    (*db)->table_count = 0;
-    // TODO: add the logic for the dynamic array; very unlikely to grow
-    (*db)->tables = malloc(sizeof(struct table) * 8);
-    (*db)->capacity = 8;
-    status s = { OK, NULL };
-    return s;
+#define DEFAULT_TABLE_COUNT 8
+
+static
+struct db *create_db(char *db_name) {
+    struct db *db = malloc(sizeof *db);
+    if (db == NULL) return NULL;
+    db->name = db_name;
+    db->table_count = 0;
+    db->tables = malloc(sizeof(struct table) * DEFAULT_TABLE_COUNT);
+    assert(db->tables);
+    db->capacity = DEFAULT_TABLE_COUNT;
+    return db;
 }
 
-static status create_table(db* db, const char* name, size_t num_cols, table** table) {
-    *table = malloc(sizeof **table);
-    if (*table == NULL) {
-        status s = { ERROR, "out of memory" };
-        return s;
-    }
-    (*table)->name = strdup(name);
-    (*table)->col_count = num_cols;
-    (*table)->col = malloc(sizeof(struct column) * num_cols);
-    assert((*table)->col);
-    (*table)->length = 0;
+static
+struct table *create_table(db* db, char* name, size_t max_cols) {
+    struct table t = { .name = name, .length = 0, .clustered = 0, .col_count = 0 };
+    t.col = malloc(sizeof(struct column) * max_cols);
+    assert(t.col);
 
-    // TODO: add the logic for the dynamic array; very unlikely to grow
-    db->tables[db->table_count] = **table;
-    db->table_count++;
-
-    status s = { OK, NULL };
-    return s;
+    // TODO: add the logic for resizing; max tables are 7 in tests
+    db->tables[db->table_count] = t;
+    return &db->tables[db->table_count++];;
 }
 
-static status create_column(table *table, const char* name, column **col) {
-    *col = malloc(sizeof **col);
-    if (*col == NULL) {
-        status s = { ERROR, "out of memory" };
-        return s;
-    }
-    (*col)->name = name;
-    (*col)->data = NULL;
-    (*col)->index = NULL;
-    (*col)->table = table;
-    table->col[table->col_count] = **col;
-    table->col_count++;
-
-    status s = { OK, NULL };
-    return s;
+static
+struct column *create_column(table *table, char* name, bool sorted) {
+    struct column c = { .name = name, .data = NULL, .index = NULL, .table = table };
+    c.data = vector_create(16);
+    assert(c.data);
+    if (sorted) table->clustered = table->col_count;    // clustered
+    table->col[table->col_count] = c;
+    return &table->col[table->col_count++];;
 }
 
+static status create(db_operator *query) {
+    status st;
+    db *db;
+    table *tbl;
+    column *col;
+    bool ret;
+    switch(query->create_type) {
+        case(CREATE_DB):
+            db = create_db(query->create_name);
+            ret = db_set_current(db);
+            st.code = ret ? OK : ERROR;
+            st.message = "database created and set";
+            break;
+        case(CREATE_TBL):
+            tbl = create_table(query->db, query->create_name, query->table_size);
+            ret = map_insert(query->assign_var, tbl, ENTITY);
+            st.code = ret ? OK : ERROR;
+            st.message = "table created";
+            break;
+        case(CREATE_COL):
+            col = create_column(query->tables, query->create_name, query->sorted);
+            ret = map_insert(query->assign_var, col, ENTITY);
+            st.code = ret ? OK : ERROR;
+            st.message = "column created";
+            break;
+        case(CREATE_IDX): break;
+        default: break;
+    }
+    return st;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+static inline
+void column_insert(struct column *c, int val) {
+    vector_push(c->data, val);
+
+    if (c->index) {
+        ; //TODO
+    }
+}
+
+static
+status rel_insert(struct table *tbl, int *row) {
+    // TODO clustered check
+    status st;
+
+    for (unsigned j = 0; j < tbl->col_count; j++)
+        column_insert(&tbl->col[j], row[j]);
+    tbl->length++;
+
+    st.code = OK;
+    st.message = "insert completed";
+    return st;
+}
+
+static
+struct status bulk_load(struct table *tbl, char *rawdata) {
+    struct status st;
+
+    int row[tbl->col_count];
+    char *nl = "\n";
+    char *comma = ",";
+    char *brkl, *brkn;
+    for (char *line = strtok_r(rawdata, nl, &brkl); line;
+         line = strtok_r(NULL, nl, &brkl)) {
+            int i = 0;
+            for (char *num = strtok_r(line, comma, &brkn); num;
+                 num = strtok_r(NULL, comma, &brkn)) {
+                row[i++] = strtol(num, NULL, 10);
+            }
+            rel_insert(tbl, row);
+    }
+
+    cs165_log(stderr, "bulk load complete, %d\n", tbl->length);
+    return st;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+/*
 static status col_scan(int low, int high, column *col, result **r) {
     status st;
 
@@ -90,6 +157,8 @@ static status col_scan(int low, int high, column *col, result **r) {
     return st;
 }
 
+//////////////////////////////////////////////////////////////////////////////
+
 static status col_fetch(column *col, result *ivec, result **r) {
     status st;
 
@@ -113,56 +182,7 @@ static status col_fetch(column *col, result *ivec, result **r) {
     (*r)->payload = realloc(vec, sizeof(int) * num_tuples);
     return st;
 }
-
-static status create(db_operator *query) {
-    status st;
-    db *db;
-    table *tbl;
-    column *col;
-    bool ret;
-    switch(query->create_type) {
-        case(CREATE_DB):
-            st = create_db(query->create_name, &db);
-            db_set_current(db);
-            break;
-        case(CREATE_TBL):
-            st = create_table(query->db, query->create_name, query->table_size, &tbl);
-            ret = map_insert(query->assign_var, tbl);
-            break;
-        case(CREATE_COL):
-            st = create_column(query->tables, query->create_name, &col);
-            ret = map_insert(query->assign_var, col);
-            break;
-        case(CREATE_IDX): break;
-        default: break;
-    }
-    return st;
-}
-
-static status rel_insert(table *tbl, int *row, result **r) {
-    status st;
-
-    int fd;
-    size_t length = tbl->length;
-    size_t filesize = length * sizeof(int);
-    off_t lastpage_offset = ((length * 4) / 4096) * 4096;
-    size_t num_cols = tbl->col_count;
-
-    for (size_t i = 0; i < num_cols; i++) {
-        column *col = &tbl->col[i];
-        fd = open(col->name, O_RDWR);
-        col->data = mmap(NULL, filesize, PROT_READ|PROT_WRITE,
-                         MAP_FILE|MAP_SHARED|MAP_NOCACHE, fd, lastpage_offset);
-        close(fd);
-        col->data[length - lastpage_offset * 4096] = row[i];
-        munmap(col->data, filesize);
-    }
-
-    *r = malloc(sizeof(struct result));
-    (*r)->num_tuples = -1;
-    (*r)->payload = 0; //TODO need to chage to void* to send msg back
-    return st;
-}
+*/
 
 /** execute_db_operator takes as input the db_operator and executes the query.
  * It should return the result (currently as a char*, although I'm not clear
@@ -170,40 +190,39 @@ static status rel_insert(table *tbl, int *row, result **r) {
  * a serialization into a string message).
  **/
 //status query_execute(db_operator* op, result** results);
-result *execute_db_operator(db_operator *query) {
+struct result *execute_db_operator(db_operator *query) {
+    struct result *r = NULL;
+    if (query == NULL) return r;
+
     status st;
-    result *r = NULL;
-    bool ret;
     switch(query->type) {
         case(CREATE):
             st = create(query);
             break;
-        case(SELECT):
-            st = col_scan(query->range.low, query->range.high, query->columns, &r);
-            ret = map_insert(query->assign_var, r);
-            break;
-        case(PROJECT):
-            st = col_fetch(query->columns, query->pos1, &r);
-            ret = map_insert(query->assign_var, r);
+        case(BULK_LOAD):
+            st = bulk_load(query->tables, query->rawdata);
             break;
         case(INSERT):
-            st = rel_insert(query->tables, query->value1, &r);
-            ret = map_insert(query->assign_var, r);
+            st = rel_insert(query->tables, query->value1);
             break;
-        case(TUPLE):
+        case(SELECT):
+            //st = col_scan(query->range.low, query->range.high, query->columns, &r);
+            //ret = map_insert(query->assign_var, r);
             break;
-        case(BULK_LOAD):
-            break;
-        case(SYNC):
-            //TODO sync everything
-            break;
-        case(AGGREGATE):
+        case(PROJECT):
+            //st = col_fetch(query->columns, query->pos1, &r);
+            //ret = map_insert(query->assign_var, r);
             break;
 
-        case(HASH_JOIN): break;
-        case(MERGE_JOIN): break;
+        case(TUPLE): break;
         case(DELETE): break;
         case(UPDATE): break;
+
+        case(AGGREGATE):
+            break;
+        case(HASH_JOIN): break;
+        case(MERGE_JOIN): break;
+        //case(SYNC): break;
         default: break;
     }
 

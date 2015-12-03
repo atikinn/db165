@@ -1,15 +1,22 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <stdbool.h>
 #include <assert.h>
+#include <stddef.h>
 
 #include "dbo.h"
 #include "symtable.h"
+#include "parse.h"
+#include "utils.h"
+#include "vector.h"
 
 static const char *DB = "db";
 static const char *TBL = "tbl";
 static const char *COL = "col";
 static const char *IDX = "idx";
+
+#define VARNAME_SIZE 16
 
 static db *curdb;
 
@@ -19,9 +26,14 @@ static db *select_db(const char *db_name) {
     return curdb;
 }
 
-void db_set_current(db *db) {
+struct db *get_curdb() {
+    return curdb;
+}
+
+bool db_set_current(db *db) {
+    if (db == NULL) return false;
     curdb = db;
-    return;
+    return true;
 }
 
 /** Operator functions **/
@@ -42,7 +54,7 @@ static db_operator *cmd_create_db(const char *db_name) {
     return dbo;
 }
 
-static db_operator *cmd_create_tbl(const char *tbl_name, const char *db_name, int size) {
+static db_operator *cmd_create_tbl(const char *tbl_name, const char *db_name, size_t size) {
     db_operator *dbo = malloc(sizeof *dbo);
     if (dbo == NULL) return NULL;
     dbo->create_name = trim_quotes_copy(tbl_name);
@@ -50,6 +62,10 @@ static db_operator *cmd_create_tbl(const char *tbl_name, const char *db_name, in
     dbo->table_size = size;
     dbo->type = CREATE;
     dbo->create_type = CREATE_TBL;
+    char varbuf[VARNAME_SIZE];
+    snprintf(varbuf, sizeof varbuf, "%s.%s", db_name, dbo->create_name);
+    dbo->assign_var = strdup(varbuf);
+    cs165_log(stderr, "create_tbl varname = %s\n", dbo->assign_var);
     return dbo;
 }
 
@@ -59,14 +75,27 @@ static bool should_be_sorted(const char *str) {
     return false;
 }
 
-static db_operator *cmd_create_column(const char *col_name, table *tbl, const char *sorted) {
+static
+db_operator *cmd_create_column(const char *col_name, const char *db_tbl_name,
+                                                     const char *sorted) {
     db_operator *dbo = malloc(sizeof *dbo);
     if (dbo == NULL) return NULL;
+
     dbo->create_name = trim_quotes_copy(col_name);
+
     dbo->sorted = should_be_sorted(sorted);
-    dbo->tables = tbl;
+
+    dbo->tables = map_get(db_tbl_name);
+    assert(dbo->tables);
+
     dbo->type = CREATE;
-    dbo->create_type = CREATE_TBL;
+    dbo->create_type = CREATE_COL;
+
+    char varbuf[VARNAME_SIZE];
+    snprintf(varbuf, sizeof varbuf, "%s.%s", dbo->tables->name, dbo->create_name);
+    dbo->assign_var = strdup(varbuf);
+    cs165_log(stderr, "create_col varname = %s\n", dbo->assign_var);
+
     return dbo;
 }
 
@@ -78,36 +107,35 @@ static enum create get_create_type(const char *type) {
     return CREATE_INVALID;
 }
 
-db_operator *cmd_create(int argc, const char **argv) {
+db_operator *cmd_create(size_t argc, const char **argv) {
     (void)argc;
-    table *tbl;
     switch(get_create_type(argv[0])) {
         case CREATE_DB:
             return cmd_create_db(argv[1]);
         case CREATE_TBL:
             return cmd_create_tbl(argv[1], argv[2], strtol(argv[3], NULL, 10));
         case CREATE_COL:
-            tbl = map_get(strchr(argv[2], '.') + 1);
-            return cmd_create_column(argv[1], tbl, argv[3]);
+            return cmd_create_column(argv[1], argv[2], argv[3]);
         case CREATE_IDX: break;
         default: break;
     }
     return NULL;
 }
 
-db_operator *cmd_rel_insert(int argc, const char **argv) {
+db_operator *cmd_rel_insert(size_t argc, const char **argv) {
     db_operator *dbo = malloc(sizeof *dbo);
     if (dbo == NULL) return NULL;
     dbo->type = INSERT;
     dbo->value1 = malloc(sizeof(int) * argc-1);
-    dbo->tables = map_get(argv[0]);
     assert(dbo->value1);
-    for (int i = 1; i < argc; i++)
-        dbo->value1[i] = strtol(argv[i], NULL, 10);
+    dbo->tables = map_get(argv[0]);
+    for (size_t i = 0; i < argc-1; i++)
+        dbo->value1[i] = strtol(argv[i+1], NULL, 10);
     return dbo;
 }
 
-db_operator *cmd_select(int argc, const char **argv) {
+
+db_operator *cmd_select(size_t argc, const char **argv) {
     db_operator *dbo = malloc(sizeof *dbo);
     if (dbo == NULL) return NULL;
     dbo->columns = map_get(argv[argc-3]);
@@ -119,7 +147,7 @@ db_operator *cmd_select(int argc, const char **argv) {
     return dbo;
 }
 
-db_operator *cmd_fetch(int argc, const char **argv) {
+db_operator *cmd_fetch(size_t argc, const char **argv) {
     (void)argc;
     db_operator *dbo = malloc(sizeof *dbo);
     if (dbo == NULL) return NULL;
@@ -130,7 +158,7 @@ db_operator *cmd_fetch(int argc, const char **argv) {
     return NULL;
 }
 
-db_operator *cmd_tuple(int argc, const char **argv) {
+db_operator *cmd_tuple(size_t argc, const char **argv) {
     (void)argc;
     db_operator *dbo = malloc(sizeof *dbo);
     if (dbo == NULL) return NULL;
@@ -142,64 +170,100 @@ db_operator *cmd_tuple(int argc, const char **argv) {
     return dbo;
 }
 
+/* not used at the moment */
+/*
+static
+struct column *get_columns(char *rawdata, size_t sz) {
+    char header[sz+1];
+    header[sz] = '\0';
+    strncpy(header, rawdata, sz);
+    int num_cols = count_ch(header, ',');
+    struct column *cols = malloc(num_cols * sizeof *cols);
+    assert(cols);
+
+    int i = 0;
+    for (char *tmp, *arg = strtok_r(header, &COMMA, &tmp); arg;
+        arg = strtok_r(NULL, &COMMA, &tmp)) {
+        cs165_log(stderr, "%s\n", arg);
+        struct column *c = map_get(arg);
+        if (c != NULL) cols[i++] = *c;
+    }
+
+    return cols;
+}
+*/
+db_operator *cmd_load(char *rawdata) {
+    db_operator *dbo = malloc(sizeof *dbo);
+    if (dbo == NULL) return NULL;
+    dbo->type = BULK_LOAD;
+
+    dbo->rawdata = strchr(rawdata, '\n') + 1;
+    char *tbl_name_end = strchr(rawdata, COMMA);
+    ptrdiff_t len = tbl_name_end - rawdata;
+    char tbl_name[len + 1];
+    strncpy(tbl_name, rawdata, len);
+    char *col_dot = strrchr(tbl_name, '.');
+    *col_dot = '\0';
+
+    cs165_log(stderr, "%s\n", tbl_name);
+    dbo->tables = map_get(tbl_name);
+    return dbo;
+}
+
+
 /** stubs **/
-db_operator *cmd_avg(int argc, const char **argv) {
+db_operator *cmd_avg(size_t argc, const char **argv) {
     (void)argc;
     (void)argv;
     return NULL;
 }
-db_operator *cmd_delete(int argc, const char **argv) {
+
+db_operator *cmd_delete(size_t argc, const char **argv) {
     (void)argc;
     (void)argv;
     return NULL;
 }
-db_operator *cmd_min(int argc, const char **argv) {
+
+db_operator *cmd_min(size_t argc, const char **argv) {
     (void)argc;
     (void)argv;
     return NULL;
 }
-db_operator *cmd_max(int argc, const char **argv) {
+
+db_operator *cmd_max(size_t argc, const char **argv) {
     (void)argc;
     (void)argv;
     return NULL;
 }
-db_operator *cmd_load(int argc, const char **argv) {
+
+db_operator *cmd_hashjoin(size_t argc, const char **argv) {
     (void)argc;
     (void)argv;
     return NULL;
 }
-db_operator *cmd_sync(int argc, const char **argv) {
+db_operator *cmd_mergejoin(size_t argc, const char **argv) {
     (void)argc;
     (void)argv;
     return NULL;
 }
-db_operator *cmd_hashjoin(int argc, const char **argv) {
+db_operator *cmd_rel_delete(size_t argc, const char **argv) {
     (void)argc;
     (void)argv;
     return NULL;
 }
-db_operator *cmd_mergejoin(int argc, const char **argv) {
+db_operator *cmd_sub(size_t argc, const char **argv) {
     (void)argc;
     (void)argv;
     return NULL;
 }
-db_operator *cmd_rel_delete(int argc, const char **argv) {
+db_operator *cmd_update(size_t argc, const char **argv) {
     (void)argc;
     (void)argv;
     return NULL;
 }
-db_operator *cmd_sub(int argc, const char **argv) {
+db_operator *cmd_add(size_t argc, const char **argv) {
     (void)argc;
     (void)argv;
     return NULL;
 }
-db_operator *cmd_update(int argc, const char **argv) {
-    (void)argc;
-    (void)argv;
-    return NULL;
-}
-db_operator *cmd_add(int argc, const char **argv) {
-    (void)argc;
-    (void)argv;
-    return NULL;
-}
+

@@ -3,7 +3,10 @@
 
 #include <stdbool.h>
 
+enum vartype { ENTITY, RESULT };
+
 extern void *map_get(const char *var);
-extern bool map_insert(const char *var, void *value);
+extern bool map_insert(char *var, void *value, enum vartype type);
+extern void clean_symtbl(void);
 
 #endif

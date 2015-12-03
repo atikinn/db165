@@ -45,4 +45,3 @@ void log_info(const char *format, ...) {
 #endif
 }
 
-

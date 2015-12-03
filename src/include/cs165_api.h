@@ -81,13 +81,12 @@ typedef struct column_index {
  * tracked in the table (length).
  **/
 typedef struct column column;
-typedef struct table table;
-
 struct column {
-    const char *name;
+    char *name;
     struct table *table;
-    int *data;
     column_index *index;
+    struct vec *data;
+    //int *data;
 };
 
 /**
@@ -95,7 +94,7 @@ struct column {
  * Defines a table structure, which is composed of multiple columns.
  * We do not require you to dynamically manage the size of your tables,
  * although you are free to append to the struct if you would like to (i.e.,
- * in clude a size_t table_size).
+ * include a size_t table_size).
  * name, the name associated with the table. Table names must be unique
  *     within a database, but tables from different databases can have the same
  *     name.
@@ -103,11 +102,13 @@ struct column {
  * - col, this is the pointer to an array of columns contained in the table.
  * - length, the size of the columns in the table.
  **/
+typedef struct table table;
 struct table {
-    const char *name;
+    char *name;
     size_t col_count;
     struct column *col;
     size_t length;
+    size_t clustered;
 };
 
 /**
@@ -118,32 +119,32 @@ struct table {
  * - tables: the pointer to the array of tables contained in the db.
  **/
 typedef struct db {
-    const char *name;
+    char *name;
     size_t table_count;
     size_t capacity;
-    table *tables;
+    struct table *tables;
 } db;
 
 /**
  * Error codes used to indicate the outcome of an API call
  **/
-typedef enum StatusCode {
-  /* The operation completed successfully */
-  OK,
-  /* There was an error with the call. */
-  ERROR,
-} StatusCode;
+enum status_code {
+  OK,       /* The operation completed successfully */
+  ERROR     /* There was an error with the call. */
+};
 
 // status declares an error code and associated message
-typedef struct status {
-    StatusCode code;
+typedef struct status status;
+struct status {
+    enum status_code code;
     const char *message;
-} status;
+};
 
-typedef struct result {
+typedef struct result result;
+struct result {
     size_t num_tuples;
     int *payload;
-} result;
+};
 
 typedef enum Aggr {
     MIN,
@@ -160,12 +161,6 @@ typedef enum create {
     CREATE_IDX,
     CREATE_INVALID
 } create_enum;
-
-typedef enum varType {
-  TABLE,
-  COLUMN,
-  INTVEC,
-} varType;
 
 typedef enum OperatorType {
     SELECT = 1,
@@ -215,42 +210,31 @@ typedef enum OperatorType {
  * op1.comparator = f;
  **/
 typedef struct db_operator {
-    // Flag to choose operator
-    OperatorType type;
-    // Create type
-    enum create create_type;
-    // This includes several possible fields that may be used in the operation.
-    Aggr agg;
-    // current db
-    db *db;
-    // for create db, tbl or col
-    const char *create_name;
-    // for create column
-    bool sorted;
-    // for create table
-    size_t table_size;
-    /* for create tbl, col, select, fetch, etc */
-    const char *assign_var;
-    struct {
-      int low;
-      int high;
-    } range;
-
     // Used for every(?) operator
+    OperatorType type;          // Flag to choose operator
+    db *db;                     // current db
     table *tables;
     column *columns;
 
-    // Internmediaties used for FETCH/PROJECT, SELECT, DELETE, HASH_JOIN
-    result *pos1;
-    // Needed for HASH_JOIN
-    result *pos2;
-    // Needed for tuple
-    int **vecs;
+    char *assign_var;           // var name before = for the map + create
+    enum create create_type;    // create types only
+    char *create_name;          // strduped name for create types
+    bool sorted;                // for create column only
+    size_t table_size;        // for create table only
+    Aggr agg;                   // aggregations only
+    char *rawdata;              // for bulk load
 
-    // For insert/delete operations, we only use value1;
-    // For update operations, we update value1 -> value2;
-    int *value1;
-    int *value2;
+    struct {
+      int low;
+      int high;
+    } range;                    //  for select
+
+    result *pos1;   // Internmediaties used for FETCH/PROJECT, SELECT, DELETE, HASH_JOIN
+    result *pos2;   // Needed for HASH_JOIN
+    int **vecs;     // Needed for tuple
+
+    int *value1;    // For insert/delete operations, we only use value1;
+    int *value2;    // For update operations, we update value1 -> value2;
 } db_operator;
 
 typedef enum OpenFlags {

@@ -27,10 +27,13 @@
 #include "common.h"
 #include "message.h"
 #include "utils.h"
+#include "cs165_api.h"
 #include "parse.h"
 #include "execute.h"
+#include "sync.h"
 
-#define DEFAULT_QUERY_BUFFER_SIZE 1024
+#define DEFAULT_QUERY_BUFFER_SIZE 8192
+
 /*
 for (const char *arg = *argv; arg; arg = *(++argv))
     cs165_log(stderr, "%s\n", arg);
@@ -85,6 +88,7 @@ void handle_client(int client_socket) {
     // 4. Send response of request.
     do {
         length = recv(client_socket, &recv_message, sizeof(message), 0);
+        log_info("received length %d %d\n", length, recv_message.length);
         if (length < 0) {
             log_err("Client connection closed!\n");
             exit(1);
@@ -92,18 +96,40 @@ void handle_client(int client_socket) {
             done = 1;
         }
 
+        bool is_file = (STRDATA == recv_message.status) ? true : false;
+
         if (!done) {
-            char recv_buffer[recv_message.length];
+            char *buf = NULL;
+            char recv_buffer[DEFAULT_QUERY_BUFFER_SIZE];
             length = recv(client_socket, recv_buffer, recv_message.length, 0);
-            recv_message.payload = recv_buffer;
-            recv_message.payload[recv_message.length] = '\0';
+            log_info("received first payload %d\n", length);
+
+            if (is_file) { // receiving a file
+                buf = malloc(recv_message.length + 1);
+                memcpy(buf, recv_buffer, length);
+                ssize_t read = length;
+                while (read < recv_message.length) {
+                    length = recv(client_socket, recv_buffer, DEFAULT_QUERY_BUFFER_SIZE, 0);
+                    log_info("received next payload %d\n", length);
+                    memcpy(buf + read, recv_buffer, length);
+                    read += length;
+                }
+                recv_message.payload = buf;
+                recv_message.payload[read] = '\0';
+                log_info("total length %d\n", read);
+            } else { //simple query
+                recv_message.payload = recv_buffer;
+                recv_message.payload[recv_message.length] = '\0';
+            }
 
             // 1. Parse command
             db_operator *query = parse_command(&recv_message, &send_message);
 
             // 2. Handle request
             result* result = execute_db_operator(query);
-            send_message.length = result->num_tuples * sizeof(int);
+
+            // free file buf
+            if (buf != NULL) free(buf);
 
             // 3. Send status of the received message (OK, UNKNOWN_QUERY, etc)
             if (send(client_socket, &(send_message), sizeof(message), 0) == -1) {
@@ -111,11 +137,15 @@ void handle_client(int client_socket) {
                 exit(1);
             }
 
+            if (result != NULL)
+                send_message.length = result->num_tuples * sizeof(int);
+
             // 4. Send response of request
-            if (send(client_socket, result, send_message.length, 0) == -1) {
-                log_err("Failed to send message.");
-                exit(1);
-            }
+            if (send_message.status == OK_WAIT_FOR_RESPONSE &&
+                send(client_socket, result, send_message.length, 0) == -1) {
+                    log_err("Failed to send message.");
+                    exit(1);
+                }
         }
     } while (!done);
 
@@ -172,8 +202,9 @@ int setup_server() {
 // After handling the client, it will exit.
 // You will need to extend this to handle multiple concurrent clients
 // and remain running until it receives a shut-down command.
-int main(void)
-{
+int main(void) {
+    restore_database();
+
     int server_socket = setup_server();
     if (server_socket < 0) {
         exit(1);

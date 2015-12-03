@@ -15,7 +15,11 @@
 #include <unistd.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdbool.h>
+#include <fcntl.h>
 
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -57,15 +61,133 @@ int connect_client() {
     return client_socket;
 }
 
-int main(void)
-{
+void send_file(int client_socket, message *send_message) {
+    char *openq = strchr(send_message->payload, '"');
+    char *closeq = strchr(openq + 1, '"');
+    int flen = closeq - openq;
+    char filename[flen];
+    filename[flen-1] = '\0';
+    strncpy(filename, openq+1, flen-1);
+
+    int fd = open(filename, O_RDONLY);
+    if (fd == -1) {
+        log_info("failed open the file\n");
+        exit(1);
+    }
+
+    struct stat s;
+    fstat(fd, &s);
+    send_message->length = s.st_size;
+    send_message->payload = mmap(NULL, s.st_size, PROT_READ, MAP_SHARED, fd, 0);
+    close(fd);
+
+    int len = 0;
+    message recv_message;
+
+    if (send_message->length > 1) {
+        //log_info("FILENAME: %s of len %d\n", filename, s.st_size);
+        // Send the message_header, which tells server payload size
+        if (send(client_socket, send_message, sizeof(message), 0) == -1) {
+            log_err("Failed to send message header.");
+            exit(1);
+        }
+
+        // Send the payload (file) to server
+        int r = send(client_socket, send_message->payload, send_message->length, 0);
+        if (r == -1) {
+            log_err("Failed to send file.");
+            exit(1);
+        }
+
+        if (r != send_message->length) {
+            log_err("actually sent: %d\n", r);
+            exit(1);
+        }
+
+        // Always wait for server response (even if it is just an OK message)
+        if ((len = recv(client_socket, &recv_message, sizeof(message), 0)) > 0) {
+            if (recv_message.status == OK_WAIT_FOR_RESPONSE
+                && (int) recv_message.length > 0) {
+                // Calculate number of bytes in response package
+                int num_bytes = (int) recv_message.length;
+                char payload[num_bytes + 1];
+
+                // Receive the payload and print it out
+                if ((len = recv(client_socket, payload, num_bytes, 0)) > 0) {
+                    payload[num_bytes] = '\0';
+                    printf("%s\n", payload);
+                }
+            }
+        } else {
+            if (len < 0) {
+                log_err("Failed to receive message.");
+            } else {
+                log_info("Server closed connection\n");
+            }
+            exit(1);
+        }
+    }
+
+    munmap(send_message->payload, send_message->length);
+}
+
+void send_command(int client_socket, message *send_message) {
+    // Only process input that is greater than 1 character.
+    // Ignore things such as new lines.
+    // Otherwise, convert to message and send the message and the
+    // payload directly to the server.
+    int len = 0;
+    message recv_message;
+
+    log_info("COMMAND: %s of len %d\n", send_message->payload, send_message->length);
+
+    if (send_message->length > 1) {
+        // Send the message_header, which tells server payload size
+        if (send(client_socket, send_message, sizeof(message), 0) == -1) {
+            log_err("Failed to send message header.");
+            exit(1);
+        }
+
+        // Send the payload (query) to server
+        if (send(client_socket, send_message->payload, send_message->length, 0) == -1) {
+            log_err("Failed to send query payload.");
+            exit(1);
+        }
+
+        // Always wait for server response (even if it is just an OK message)
+        if ((len = recv(client_socket, &recv_message, sizeof(message), 0)) > 0) {
+            if (recv_message.status == OK_WAIT_FOR_RESPONSE
+                && (int) recv_message.length > 0) {
+                // Calculate number of bytes in response package
+                int num_bytes = (int) recv_message.length;
+                char payload[num_bytes + 1];
+
+                // Receive the payload and print it out
+                if ((len = recv(client_socket, payload, num_bytes, 0)) > 0) {
+                    payload[num_bytes] = '\0';
+                    printf("%s\n", payload);
+                }
+            }
+        } else {
+            if (len < 0) {
+                log_err("Failed to receive message.");
+            } else {
+                log_info("Server closed connection\n");
+            }
+            exit(1);
+        }
+    }
+}
+
+const char *load = "load";
+
+int main(void) {
     int client_socket = connect_client();
     if (client_socket < 0) {
         exit(1);
     }
 
     message send_message;
-    message recv_message;
 
     // Always output an interactive marker at the start of each command if the
     // input is from stdin. Do not output if piped in from file or from other fd
@@ -75,65 +197,32 @@ int main(void)
     }
 
     char *output_str = NULL;
-    int len = 0;
-
     // Continuously loop and wait for input. At each iteration:
     // 1. output interactive marker
     // 2. read from stdin until eof.
     char read_buffer[DEFAULT_STDIN_BUFFER_SIZE];
-    send_message.payload = read_buffer;
 
     while (printf("%s", prefix),
            output_str = fgets(read_buffer, DEFAULT_STDIN_BUFFER_SIZE, stdin),
            !feof(stdin)) {
+
         if (output_str == NULL) {
             log_err("fgets failed.\n");
             break;
         }
 
-        // Only process input that is greater than 1 character.
-        // Ignore things such as new lines.
-        // Otherwise, convert to message and send the message and the
-        // payload directly to the server.
-        send_message.length = strlen(read_buffer);
-        if (send_message.length > 1) {
-            // Send the message_header, which tells server payload size
-            if (send(client_socket, &(send_message), sizeof(message), 0) == -1) {
-                log_err("Failed to send message header.");
-                exit(1);
-            }
-
-            // Send the payload (query) to server
-            if (send(client_socket, send_message.payload, send_message.length, 0) == -1) {
-                log_err("Failed to send query payload.");
-                exit(1);
-            }
-
-            // Always wait for server response (even if it is just an OK message)
-            if ((len = recv(client_socket, &(recv_message), sizeof(message), 0)) > 0) {
-                if (recv_message.status == OK_WAIT_FOR_RESPONSE
-                    && (int) recv_message.length > 0) {
-                    // Calculate number of bytes in response package
-                    int num_bytes = (int) recv_message.length;
-                    char payload[num_bytes + 1];
-
-                    // Receive the payload and print it out
-                    if ((len = recv(client_socket, payload, num_bytes, 0)) > 0) {
-                        payload[num_bytes] = '\0';
-                        printf("%s\n", payload);
-                    }
-                }
-            } else {
-                if (len < 0) {
-                    log_err("Failed to receive message.");
-                }
-                else {
-                    log_info("Server closed connection\n");
-                }
-                exit(1);
-            }
+        log_info("%s", output_str);
+        if (strncmp(read_buffer, load, strlen(load)) == 0) {
+            send_message.status = STRDATA;
+            send_file(client_socket, &send_message);
+        } else {
+            send_message.payload = read_buffer;
+            send_message.length = strlen(read_buffer);
+            send_message.status = COMMAND;
+            send_command(client_socket, &send_message);
         }
     }
+
     close(client_socket);
     return 0;
 }

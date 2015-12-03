@@ -7,7 +7,9 @@ typedef enum message_status {
     OK_WAIT_FOR_RESPONSE,
     UNKNOWN_COMMAND,
     INCORRECT_FORMAT,
-    INTERNAL_ERROR
+    INTERNAL_ERROR,
+    STRDATA,
+    COMMAND
 } message_status;
 
 // message is a single packet of information sent between client/server.

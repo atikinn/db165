@@ -52,7 +52,7 @@ size_t vector_insert(struct vec *v, int item) {
 }
 
 size_t vector_append(struct vec *v1, struct vec *v2) {
-    for (int j = 0; j < v2->sz; j++)
+    for (size_t j = 0; j < v2->sz; j++)
 	vector_push(v1, v2->pos[j]);
     return v1->sz;
 }
