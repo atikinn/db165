@@ -4,7 +4,7 @@
 struct vec {
     size_t sz;
     size_t capacity;
-    int *pos;
+    int *vals;
 };
 
 extern bool vector_init(struct vec *v, size_t capacity);

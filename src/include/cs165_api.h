@@ -22,6 +22,7 @@ SOFTWARE.
 
 #include <stdlib.h>
 #include <stdbool.h>
+#include "vector.h"
 
 /**
  * EXTRA
@@ -85,8 +86,7 @@ struct column {
     char *name;
     struct table *table;
     column_index *index;
-    struct vec *data;
-    //int *data;
+    struct vec data;
 };
 
 /**
@@ -140,19 +140,26 @@ struct status {
     const char *message;
 };
 
-typedef struct result result;
-struct result {
+typedef struct cvec cvec;
+
+enum result_type { VECTOR, LONG_VECTOR, DOUBLE_VAL, INT_VAL };
+
+struct cvec {
+    enum result_type type;
     size_t num_tuples;
-    int *payload;
+    union {
+      long int *long_values;
+      int *values;
+      long double dval;
+      int ival;
+    };
 };
 
-typedef enum Aggr {
+typedef enum aggr {
     MIN,
     MAX,
-    SUM,
     AVG,
-    CNT,
-} Aggr;
+} aggr;
 
 typedef enum create {
     CREATE_DB,
@@ -164,14 +171,18 @@ typedef enum create {
 
 typedef enum OperatorType {
     SELECT = 1,
+    SELECT2,
     PROJECT,
     HASH_JOIN,
     MERGE_JOIN,
     INSERT,
     DELETE,
     UPDATE,
-    AGGREGATE,
-
+    AGGREGATE_COL,
+    AGGREGATE_RES,
+    ADD,
+    SUB,
+    JOIN,
     CREATE,
     TUPLE,
     SYNC,
@@ -210,31 +221,36 @@ typedef enum OperatorType {
  * op1.comparator = f;
  **/
 typedef struct db_operator {
-    // Used for every(?) operator
     OperatorType type;          // Flag to choose operator
     db *db;                     // current db
     table *tables;
-    column *columns;
+    column *columns;            // for SELECT, PROJECT,
 
-    char *assign_var;           // var name before = for the map + create
-    enum create create_type;    // create types only
-    char *create_name;          // strduped name for create types
-    bool sorted;                // for create column only
-    size_t table_size;        // for create table only
-    Aggr agg;                   // aggregations only
-    char *rawdata;              // for bulk load
+    char *assign_var;           // var name for symtable; almost every operator
+
+    enum create create_type;    // CREATE types only
+    char *create_name;          // strduped name for CREATE types
+    bool sorted;                // for CREATE_COL only
+    size_t table_size;          // for CREATE_TABLE only
+    char *rawdata;              // for BULK LOAD
+
+    enum aggr agg;              // AGGREAGTE type
 
     struct {
-      int low;
-      int high;
-    } range;                    //  for select
+      size_t low;
+      size_t high;
+    } range;                    // for SELECT/SELECT2
 
-    result *pos1;   // Internmediaties used for FETCH/PROJECT, SELECT, DELETE, HASH_JOIN
-    result *pos2;   // Needed for HASH_JOIN
-    int **vecs;     // Needed for tuple
+    struct cvec *pos1;        // result of SELECT for SELECT2/PROJECT
+    struct cvec *pos2;        // result of SELECT for SELECT2/PROJECT
+    struct cvec *vals1;       // result of PROJECT for SELECT2, TUPLE, ADD, SUB
+    struct cvec *vals2;       // second result for ADD/SUB
 
-    int *value1;    // For insert/delete operations, we only use value1;
-    int *value2;    // For update operations, we update value1 -> value2;
+    int *value1;                // For INSERT/delete operations, we only use value1;
+    int *value2;                // For UPDATE operations, we update value1 -> value2;
+
+    enum result_type msgtype;
+    //size_t vecs_size;           // num of cvecs for TUPLE TODO
 } db_operator;
 
 typedef enum OpenFlags {

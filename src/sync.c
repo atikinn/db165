@@ -20,6 +20,7 @@
 static const char *DBPATH = "./db";
 static const char *METAFILE = "meta";
 static const size_t PATHLEN = 128;
+static const size_t VARNAME_SIZE = 64;
 
 enum meta_state { DB_RECORD, TBL_RECORD, COL_RECORD };
 
@@ -121,11 +122,8 @@ void persist_data(struct vec *data, const char *path) {
 	return;
     }
 
-    memcpy(map, (void *)data->pos, data->sz * sizeof(int));
-    /*
-    for (size_t i = 0; i < data->sz; i++)
-	map[i] = data->pos[i];
-    */
+    memcpy(map, (void *)data->vals, data->sz * sizeof(int));
+
     if (munmap(map, sz) == -1) {
 	perror("Error un-mmapping the file");
 	return;
@@ -138,7 +136,7 @@ static inline
 void persist_col(struct column *col, const char *tname) {
     char buf[PATHLEN];
     char *path = vbsnprintf(buf, sizeof buf, "%s/%s.%s.bin", DBPATH, tname, col->name);
-    persist_data(col->data, path);
+    persist_data(&col->data, path);
     if (path != buf) free(path);
     return;
 }
@@ -149,7 +147,7 @@ void persist_db(struct db *db) {
         struct table *tbl = &db->tables[i];
         for (size_t j = 0; j < tbl->col_count; j++) {
             struct column *col = &tbl->col[j];
-            cs165_log(stderr, "%d = %d\n", tbl->length, col->data->pos[tbl->length-1]);
+            cs165_log(stderr, "%d = %d\n", tbl->length, col->data.vals[tbl->length-1]);
             persist_col(col, tbl->name) ;
         }
     }
@@ -277,8 +275,7 @@ void clean_db(struct db *db) {
 	for (size_t j = 0; j < tbl->col_count; j++) {
 	    struct column *col = &tbl->col[j];
 	    free(col->name);
-	    free(col->data->pos);
-	    free(col->data);
+	    free(col->data.vals);
 	    if (col->index) free(col->index);
 	}
 	free(tbl->name);
@@ -302,10 +299,8 @@ void sync(void) {
 
 static
 struct column restore_col(char *record, struct table *tbl) {
-    struct vec *vec = vector_create(tbl->length);
-    assert(vec);
-    struct column col = { .name = strdup(record), .table = tbl,
-			  .data = vec, .index = NULL, };
+    struct column col = { .name = strdup(record), .table = tbl, .index = NULL };
+    vector_init(&col.data, tbl->length);
     return col;
 }
 
@@ -337,27 +332,34 @@ struct db *restore(char *meta, size_t sz) {
     enum meta_state state = DB_RECORD;
     struct db *db;
     struct table *tbl;
+    struct column *col;
     char *rec;
     size_t col_count = 0, prev = 0;
+    char varbuf[VARNAME_SIZE];
     for (size_t j = 0; j < sz; j++) {
 	if (meta[j] == '|') {
 	    meta[j] = '\0';
 	    rec = &meta[prev];
 	    prev = j + 1;
-	    //cs165_log(stderr, "%s\n", rec);
 
 	    switch(state) {
 		case DB_RECORD:
 		    db = restore_db(rec);
+		    //map_insert(db->name, db, ENTITY);
 		    state = TBL_RECORD;
 		    break;
 		case TBL_RECORD:
 		    db->tables[db->table_count] = restore_tbl(rec, &col_count);
 		    tbl = &db->tables[db->table_count++];
+		    snprintf(varbuf, sizeof varbuf, "%s.%s", db->name, tbl->name);
+		    map_insert(strdup(varbuf), tbl, ENTITY);
 		    state = COL_RECORD;
 		    break;
 		case COL_RECORD:
-		    tbl->col[tbl->col_count++] = restore_col(rec, tbl);
+		    tbl->col[tbl->col_count] = restore_col(rec, tbl);
+		    col = &tbl->col[tbl->col_count++];
+		    snprintf(varbuf, sizeof varbuf, "%s.%s.%s", db->name, tbl->name, col->name);
+		    map_insert(strdup(varbuf), col, ENTITY);
 		    if (col_count == tbl->col_count) state = TBL_RECORD;
 		    break;
 	    }
@@ -380,6 +382,8 @@ struct db *restore_meta(void) {
     return db;
 }
 
+//////////////////////////////////////////////////////////////////////////////
+
 static
 void restore_col_data(struct column *col) {
     char *tname = col->table->name;
@@ -388,7 +392,10 @@ void restore_col_data(struct column *col) {
 
     char *data;
     off_t sz = filemap(path, &data, PROT_READ);
-    memcpy(col->data->pos, data, sz);
+    memcpy(col->data.vals, data, sz);
+    col->data.sz = sz / sizeof (int);
+    col->data.capacity = col->data.sz;
+    cs165_log(stdout, "col capacity %d\n", col->data.capacity);
     fileunmap(data, sz);
 }
 
@@ -410,7 +417,7 @@ void restore_database(void) {
 	restore_data(db);
 	struct table *tbl = &db->tables[0];
 	for (size_t j = 0; j < tbl->col_count; j++)
-	    fprintf(stderr, "%d ", tbl->col[j].data->pos[tbl->length-1]);
+	    fprintf(stderr, "%d ", tbl->col[j].data.vals[tbl->length-1]);
 	fprintf(stderr, "\n");
     }
     return;

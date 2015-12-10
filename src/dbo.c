@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <assert.h>
 #include <stddef.h>
+#include <limits.h>
 
 #include "dbo.h"
 #include "symtable.h"
@@ -16,7 +17,7 @@ static const char *TBL = "tbl";
 static const char *COL = "col";
 static const char *IDX = "idx";
 
-#define VARNAME_SIZE 16
+#define VARNAME_SIZE 64
 
 static db *curdb;
 
@@ -51,6 +52,7 @@ static db_operator *cmd_create_db(const char *db_name) {
     dbo->create_name = trim_quotes_copy(db_name);
     dbo->type = CREATE;
     dbo->create_type = CREATE_DB;
+    //dbo->vecs_size = 0;
     return dbo;
 }
 
@@ -65,7 +67,7 @@ static db_operator *cmd_create_tbl(const char *tbl_name, const char *db_name, si
     char varbuf[VARNAME_SIZE];
     snprintf(varbuf, sizeof varbuf, "%s.%s", db_name, dbo->create_name);
     dbo->assign_var = strdup(varbuf);
-    cs165_log(stderr, "create_tbl varname = %s\n", dbo->assign_var);
+    //dbo->vecs_size = 0;
     return dbo;
 }
 
@@ -92,10 +94,11 @@ db_operator *cmd_create_column(const char *col_name, const char *db_tbl_name,
     dbo->create_type = CREATE_COL;
 
     char varbuf[VARNAME_SIZE];
-    snprintf(varbuf, sizeof varbuf, "%s.%s", dbo->tables->name, dbo->create_name);
+    snprintf(varbuf, sizeof varbuf, "%s.%s.%s", curdb->name, dbo->tables->name, dbo->create_name);
     dbo->assign_var = strdup(varbuf);
     cs165_log(stderr, "create_col varname = %s\n", dbo->assign_var);
 
+    //dbo->vecs_size = 0;
     return dbo;
 }
 
@@ -126,24 +129,47 @@ db_operator *cmd_rel_insert(size_t argc, const char **argv) {
     db_operator *dbo = malloc(sizeof *dbo);
     if (dbo == NULL) return NULL;
     dbo->type = INSERT;
-    dbo->value1 = malloc(sizeof(int) * argc-1);
+    dbo->value1 = malloc(sizeof(int) * argc-2);
     assert(dbo->value1);
     dbo->tables = map_get(argv[0]);
-    for (size_t i = 0; i < argc-1; i++)
+    for (size_t i = 0; i < argc-2; i++)
         dbo->value1[i] = strtol(argv[i+1], NULL, 10);
+    //dbo->vecs_size = 0;
     return dbo;
 }
 
+static
+long convert_value(const char *num, bool low) {
+    char *endptr;
+    long res = strtol(num, &endptr, 10);
+    if (*endptr == '\0') return res;
+    if (endptr == num && low) return INT_MIN;
+    if (endptr == num && !low) return INT_MAX;
+    assert(false && "converted input only partially");
+}
 
 db_operator *cmd_select(size_t argc, const char **argv) {
     db_operator *dbo = malloc(sizeof *dbo);
     if (dbo == NULL) return NULL;
-    dbo->columns = map_get(argv[argc-3]);
-    dbo->range.low = strtol(argv[argc-2], NULL, 10);
-    dbo->range.high = strtol(argv[argc-1], NULL, 10);
-    dbo->assign_var = strdup(argv[0]);
-    dbo->type = SELECT;
-    if (argc == 5) dbo->pos1 = map_get(argv[1]);
+
+    if (argc == 5) {
+        dbo->columns = map_get(argv[0]);
+        dbo->range.low = convert_value(argv[1], true);
+        dbo->range.high = convert_value(argv[2], false);
+        dbo->assign_var = strdup(argv[3]);
+        dbo->type = SELECT;
+    }
+
+    if (argc == 6) {
+        dbo->pos1 = map_get(argv[0]);
+        dbo->vals1 = map_get(argv[1]);
+        dbo->range.low = convert_value(argv[2], true);
+        dbo->range.high = convert_value(argv[3], false);
+        dbo->assign_var = strdup(argv[4]);
+        dbo->type = SELECT2;
+    }
+
+    //dbo->vecs_size = 0;
     return dbo;
 }
 
@@ -151,47 +177,27 @@ db_operator *cmd_fetch(size_t argc, const char **argv) {
     (void)argc;
     db_operator *dbo = malloc(sizeof *dbo);
     if (dbo == NULL) return NULL;
-    dbo->assign_var = strdup(argv[0]);
-    dbo->columns = map_get(argv[1]);
-    dbo->pos1 = map_get(argv[2]);
+    dbo->columns = map_get(argv[0]);
+    dbo->pos1 = map_get(argv[1]);
+    dbo->assign_var = strdup(argv[2]);
     dbo->type = PROJECT;
-    return NULL;
+    //dbo->vecs_size = 0;
+    return dbo;
 }
 
+/* TODO: 1. doesn't accept more that one argument; 2. can't tuple a column -
+ * need a separate tuple for that */
 db_operator *cmd_tuple(size_t argc, const char **argv) {
     (void)argc;
     db_operator *dbo = malloc(sizeof *dbo);
     if (dbo == NULL) return NULL;
-    dbo->vecs = malloc(sizeof(void *) * (argc + 1));
-    size_t i = 0;
-    for (; i < argc; i++)
-        dbo->vecs[i] = map_get(argv[i]);
-    dbo->vecs[i] = NULL;
+    dbo->vals1 = map_get(argv[0]);
+    dbo->type = TUPLE;
+    dbo->msgtype = dbo->vals1->type;
+    //dbo->vecs_size = dbo->vals->num_tuples;
     return dbo;
 }
 
-/* not used at the moment */
-/*
-static
-struct column *get_columns(char *rawdata, size_t sz) {
-    char header[sz+1];
-    header[sz] = '\0';
-    strncpy(header, rawdata, sz);
-    int num_cols = count_ch(header, ',');
-    struct column *cols = malloc(num_cols * sizeof *cols);
-    assert(cols);
-
-    int i = 0;
-    for (char *tmp, *arg = strtok_r(header, &COMMA, &tmp); arg;
-        arg = strtok_r(NULL, &COMMA, &tmp)) {
-        cs165_log(stderr, "%s\n", arg);
-        struct column *c = map_get(arg);
-        if (c != NULL) cols[i++] = *c;
-    }
-
-    return cols;
-}
-*/
 db_operator *cmd_load(char *rawdata) {
     db_operator *dbo = malloc(sizeof *dbo);
     if (dbo == NULL) return NULL;
@@ -207,30 +213,103 @@ db_operator *cmd_load(char *rawdata) {
 
     cs165_log(stderr, "%s\n", tbl_name);
     dbo->tables = map_get(tbl_name);
+    //dbo->vecs_size = 0;
     return dbo;
 }
 
-
-/** stubs **/
+/** aggregates **/
 db_operator *cmd_avg(size_t argc, const char **argv) {
     (void)argc;
-    (void)argv;
-    return NULL;
-}
-
-db_operator *cmd_delete(size_t argc, const char **argv) {
-    (void)argc;
-    (void)argv;
-    return NULL;
+    db_operator *dbo = malloc(sizeof *dbo);
+    if (dbo == NULL) return NULL;
+    switch(map_gettype(argv[0])) {
+        case ENTITY:
+            dbo->columns = map_get(argv[0]);
+            dbo->type = AGGREGATE_COL;
+            break;
+        case RESULT:
+            dbo->vals1 = map_get(argv[0]);
+            dbo->type = AGGREGATE_RES;
+            break;
+        case INVALID_VARTYPE: assert(false);
+    }
+    dbo->agg = AVG;
+    dbo->assign_var = strdup(argv[1]);
+    return dbo;
 }
 
 db_operator *cmd_min(size_t argc, const char **argv) {
     (void)argc;
+    db_operator *dbo = malloc(sizeof *dbo);
+    if (dbo == NULL) return NULL;
+    switch(map_gettype(argv[0])) {
+        case ENTITY:
+            dbo->columns = map_get(argv[0]);
+            dbo->type = AGGREGATE_COL;
+            break;
+        case RESULT:
+            dbo->vals1 = map_get(argv[0]);
+            dbo->type = AGGREGATE_RES;
+            break;
+        case INVALID_VARTYPE: assert(false);
+    }
+    dbo->agg = MIN;
+    dbo->assign_var = strdup(argv[1]);
+    return dbo;
+}
+
+db_operator *cmd_max(size_t argc, const char **argv) {
+    (void)argc;
+    db_operator *dbo = malloc(sizeof *dbo);
+    if (dbo == NULL) return NULL;
+    switch(map_gettype(argv[0])) {
+        case ENTITY:
+            dbo->columns = map_get(argv[0]);
+            dbo->type = AGGREGATE_COL;
+            break;
+        case RESULT:
+            dbo->vals1 = map_get(argv[0]);
+            dbo->type = AGGREGATE_RES;
+            break;
+        case INVALID_VARTYPE: assert(false);
+    }
+    dbo->assign_var = strdup(argv[1]);
+    dbo->agg = MAX;
+    return dbo;
+}
+
+/** vector ops **/
+db_operator *cmd_add(size_t argc, const char **argv) {
+    (void)argc;
+    db_operator *dbo = malloc(sizeof *dbo);
+    if (dbo == NULL) return NULL;
+    dbo->vals1 = map_get(argv[0]);
+    dbo->vals2 = map_get(argv[1]);
+    dbo->type = ADD;
+    dbo->assign_var = strdup(argv[2]);
+    return dbo;
+}
+
+db_operator *cmd_sub(size_t argc, const char **argv) {
+    (void)argc;
+    db_operator *dbo = malloc(sizeof *dbo);
+    if (dbo == NULL) return NULL;
+    dbo->vals1 = map_get(argv[0]);
+    dbo->vals2 = map_get(argv[1]);
+    dbo->type = SUB;
+    dbo->assign_var = strdup(argv[2]);
+    return dbo;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+db_operator *cmd_join(size_t argc, const char **argv) {
+    (void)argc;
     (void)argv;
     return NULL;
 }
 
-db_operator *cmd_max(size_t argc, const char **argv) {
+db_operator *cmd_mergejoin(size_t argc, const char **argv) {
     (void)argc;
     (void)argv;
     return NULL;
@@ -241,29 +320,15 @@ db_operator *cmd_hashjoin(size_t argc, const char **argv) {
     (void)argv;
     return NULL;
 }
-db_operator *cmd_mergejoin(size_t argc, const char **argv) {
-    (void)argc;
-    (void)argv;
-    return NULL;
-}
+
 db_operator *cmd_rel_delete(size_t argc, const char **argv) {
     (void)argc;
     (void)argv;
     return NULL;
 }
-db_operator *cmd_sub(size_t argc, const char **argv) {
-    (void)argc;
-    (void)argv;
-    return NULL;
-}
+
 db_operator *cmd_update(size_t argc, const char **argv) {
     (void)argc;
     (void)argv;
     return NULL;
 }
-db_operator *cmd_add(size_t argc, const char **argv) {
-    (void)argc;
-    (void)argv;
-    return NULL;
-}
-

@@ -11,7 +11,7 @@ static const char COMMA = ',';
 static const char NL = '\n';
 
 static inline
-int count_ch(const char *str, char ch) {
+size_t count_ch(const char *str, char ch) {
     int count = 0;
     for (; *str; count += (*str++ == ch)) ;
     return count;

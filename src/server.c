@@ -34,11 +34,6 @@
 
 #define DEFAULT_QUERY_BUFFER_SIZE 8192
 
-/*
-for (const char *arg = *argv; arg; arg = *(++argv))
-    cs165_log(stderr, "%s\n", arg);
-*/
-
 // Here, we allow for a global of DSL COMMANDS to be shared in the program
 //dsl** dsl_commands;
 
@@ -66,6 +61,32 @@ db_operator* parse_command(message* recv_message, message* send_message) {
 }
 */
 
+static
+int prepare_response(struct cvec *result, void **payload) {
+    int length = 0;
+    if (result != NULL /* && st.code == OK */) {
+        switch(result->type) {
+            case INT_VAL:
+                *payload = &result->ival;
+                length = result->num_tuples * sizeof(int);
+                break;
+            case DOUBLE_VAL:
+                *payload = &result->dval;
+                length = result->num_tuples * sizeof(double long);
+                break;
+            case VECTOR:
+                *payload = result->values;
+                length = result->num_tuples * sizeof(int);
+                break;
+            case LONG_VECTOR:
+                *payload = result->long_values;
+                length = result->num_tuples * sizeof(long int);
+                break;
+        }
+    }
+    return length;
+}
+
 /**
  * handle_client(client_socket)
  * This is the execution routine after a client has connected.
@@ -78,7 +99,7 @@ void handle_client(int client_socket) {
     log_info("Connected to socket: %d.\n", client_socket);
 
     // Create two messages, one from which to read and one from which to receive
-    message send_message = {0, 0, 0};
+    message send_message = {0, 0, 0, 0};
     message recv_message;
 
     // Continually receive messages from client and execute queries.
@@ -88,7 +109,7 @@ void handle_client(int client_socket) {
     // 4. Send response of request.
     do {
         length = recv(client_socket, &recv_message, sizeof(message), 0);
-        log_info("received length %d %d\n", length, recv_message.length);
+        //log_info("received length %d %d\n", length, recv_message.length);
         if (length < 0) {
             log_err("Client connection closed!\n");
             exit(1);
@@ -102,7 +123,7 @@ void handle_client(int client_socket) {
             char *buf = NULL;
             char recv_buffer[DEFAULT_QUERY_BUFFER_SIZE];
             length = recv(client_socket, recv_buffer, recv_message.length, 0);
-            log_info("received first payload %d\n", length);
+            //log_info("received first payload %d\n", length);
 
             if (is_file) { // receiving a file
                 buf = malloc(recv_message.length + 1);
@@ -110,13 +131,13 @@ void handle_client(int client_socket) {
                 ssize_t read = length;
                 while (read < recv_message.length) {
                     length = recv(client_socket, recv_buffer, DEFAULT_QUERY_BUFFER_SIZE, 0);
-                    log_info("received next payload %d\n", length);
+                    //log_info("received next payload %d\n", length);
                     memcpy(buf + read, recv_buffer, length);
                     read += length;
                 }
                 recv_message.payload = buf;
                 recv_message.payload[read] = '\0';
-                log_info("total length %d\n", read);
+                //log_info("total length %d\n", read);
             } else { //simple query
                 recv_message.payload = recv_buffer;
                 recv_message.payload[recv_message.length] = '\0';
@@ -126,10 +147,19 @@ void handle_client(int client_socket) {
             db_operator *query = parse_command(&recv_message, &send_message);
 
             // 2. Handle request
-            result* result = execute_db_operator(query);
+            struct cvec *result = NULL;
+            struct status st = execute_db_operator(query, &result);
+            (void)st;
+            // TODO, check for ERROR status_code
 
-            // free file buf
+            // free file buf after loading
             if (buf != NULL) free(buf);
+
+            // prepare the response
+            void *resp_payload = NULL;
+            send_message.length = prepare_response(result, &resp_payload);
+
+            log_info("status %d of len %d\n", send_message.status, send_message.length);
 
             // 3. Send status of the received message (OK, UNKNOWN_QUERY, etc)
             if (send(client_socket, &(send_message), sizeof(message), 0) == -1) {
@@ -137,12 +167,9 @@ void handle_client(int client_socket) {
                 exit(1);
             }
 
-            if (result != NULL)
-                send_message.length = result->num_tuples * sizeof(int);
-
             // 4. Send response of request
             if (send_message.status == OK_WAIT_FOR_RESPONSE &&
-                send(client_socket, result, send_message.length, 0) == -1) {
+                send(client_socket, resp_payload, send_message.length, 0) == -1) {
                     log_err("Failed to send message.");
                     exit(1);
                 }

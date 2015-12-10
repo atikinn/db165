@@ -83,7 +83,7 @@ malloc_failed:
 void btree_load(struct btree *bt, struct vec *v) {
     if (bt->leading) {
 	for (int j = 0; j < v->sz; j++)
-	    btree_insert(bt, v->pos[j], j);
+	    btree_insert(bt, v->vals[j], j);
     } else {	// or do bulk
 	struct sorted_entry *zipped = zipWithIdx(v);
 	ccqsort(zipped, v->sz, sizeof *zipped);
@@ -127,7 +127,7 @@ void traverse_bt(struct btnode *x) {
 	    fprintf(stderr, "%d (", x->keys[j]);
 	    if (bset_isset(x->idref, j)) {
 		for (int i = 0; i < x->values[j].ids->sz; i++)
-		    fprintf(stderr, " %d ", x->values[j].ids->pos[i]);
+		    fprintf(stderr, " %d ", x->values[j].ids->vals[i]);
 	    } else {
 		fprintf(stderr, " %zu ", x->values[j].id);
 	    }
@@ -278,7 +278,7 @@ void increment_helper(struct btnode *leaf, int idx) {
 	if (bset_isset(leaf->idref, j)) {
 	    struct vec *v = leaf->values[j].ids;
 	    for (int i = 0; i < v->sz; i++)
-		v->pos[i]++;
+		v->vals[i]++;
 	} else {
 	    leaf->values[j].id++;
 	}

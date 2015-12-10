@@ -6,13 +6,13 @@
 all: client server tags
 
 # C-compiler settings
-CC = gcc -std=c11 -g -ggdb3
+CC = gcc -std=c11
 
 # Default optimization level
 O ?= 0	#3
 
 # Flags and other libraries
-override CFLAGS += -Wall -Wextra -pedantic -D_FORTIFY_SOURCE -DLOG -DLOG_ERROR \
+override CFLAGS += -Wall -Wextra -pedantic -g -ggdb3 -D_FORTIFY_SOURCE -DLOG -DLOG_ERROR \
 		-DLOG_INFO -pthread -O$(O) -I$(INCLUDES) -D _GNU_SOURCE
 LDFLAGS =
 LIBS =
@@ -55,12 +55,12 @@ $(DEPSDIR)/stamp $(BUILDSTAMP):
 client: client.o utils.o
 	$(CC) $(CFLAGS) $(DEPCFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
 
-server: server.o dbo.o parse.o utils.o symtable.o execute.o vector.o sync.o
+server: server.o dbo.o utils.o parse.o symtable.o execute.o vector.o sync.o
 	$(CC) $(CFLAGS) $(DEPCFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS) $(MACROS)
 
 clean:
 	rm -f client server *.o *~ *.bak core *.core cs165_unix_socket tags
-	rm -rf .deps
+	rm -rf .deps *.dSYM
 
 distclean: clean
 	rm -rf $(DEPSDIR)

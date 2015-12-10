@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <fcntl.h>
+#include <errno.h>
 
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -29,6 +30,46 @@
 #include "utils.h"
 
 #define DEFAULT_STDIN_BUFFER_SIZE 1024
+void get_all_buf(int sock, char *output) {
+    (void) output;
+    char buffer[1024];
+
+    int n;
+    while((errno = 0, (n = recv(sock, buffer, sizeof(buffer), 0)) > 0)
+            || errno == EINTR) {
+        if(n > 0)
+            ;
+            //output.append(buffer, n);
+    }
+
+    if(n < 0) {
+        /* handle error - for example throw an exception*/
+    }
+}
+
+char *itoa (int value, char *result, int base) {
+    // check that the base if valid
+    if (base < 2 || base > 36) { *result = '\0'; return result; }
+
+    char* ptr = result, *ptr1 = result, tmp_char;
+    int tmp_value;
+
+    do {
+        tmp_value = value;
+        value /= base;
+        *ptr++ = "zyxwvutsrqponmlkjihgfedcba9876543210123456789abcdefghijklmnopqrstuvwxyz" [35 + (tmp_value - value * base)];
+    } while (value);
+
+    // Apply negative sign
+    if (tmp_value < 0) *ptr++ = '-';
+    *ptr-- = '\0';
+    while (ptr1 < ptr) {
+        tmp_char = *ptr;
+        *ptr--= *ptr1;
+        *ptr1++ = tmp_char;
+    }
+    return result;
+}
 
 /**
  * connect_client()
@@ -139,7 +180,7 @@ void send_command(int client_socket, message *send_message) {
     int len = 0;
     message recv_message;
 
-    log_info("COMMAND: %s of len %d\n", send_message->payload, send_message->length);
+    //log_info("COMMAND: %s of len %d\n", send_message->payload, send_message->length);
 
     if (send_message->length > 1) {
         // Send the message_header, which tells server payload size
@@ -156,16 +197,32 @@ void send_command(int client_socket, message *send_message) {
 
         // Always wait for server response (even if it is just an OK message)
         if ((len = recv(client_socket, &recv_message, sizeof(message), 0)) > 0) {
-            if (recv_message.status == OK_WAIT_FOR_RESPONSE
-                && (int) recv_message.length > 0) {
+            int num_bytes = (int) recv_message.length;
+            //log_info("num_bytes = %d, status = %d\n", num_bytes, recv_message.status);
+            if (recv_message.status == OK_WAIT_FOR_RESPONSE && num_bytes > 0) {
                 // Calculate number of bytes in response package
-                int num_bytes = (int) recv_message.length;
                 char payload[num_bytes + 1];
-
+                payload[num_bytes] = '\0';
                 // Receive the payload and print it out
+                // TODO two buffers, one local, another full or just print out
                 if ((len = recv(client_socket, payload, num_bytes, 0)) > 0) {
-                    payload[num_bytes] = '\0';
-                    printf("%s\n", payload);
+                    if (recv_message.payload_type == DOUBLE_VAL) {
+                        long double *vals = (double long *)payload;
+                        for (size_t i = 0; i < num_bytes / sizeof(long double); i++)
+                            fprintf(stderr, "%Lf\n", vals[i]);
+                    } else if (recv_message.payload_type == VECTOR ||
+                               recv_message.payload_type == INT_VAL) {
+                        int *vals = (int *)payload;
+                        for (size_t i = 0; i < num_bytes / sizeof(int); i++)
+                            fprintf(stderr, "%d\n", vals[i]);
+                    } else if (recv_message.payload_type == LONG_VECTOR) {
+                        long int *vals = (long int *)payload;
+                        for (size_t i = 0; i < num_bytes / sizeof(long int); i++)
+                            fprintf(stderr, "%ld\n", vals[i]);
+                    } else {
+                        log_err("received unknown payload response\n");
+                        exit(1);
+                    }
                 }
             }
         } else {

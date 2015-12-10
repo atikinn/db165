@@ -19,7 +19,6 @@ static struct {
     { "add", cmd_add },
     { "avg", cmd_avg },
     { "create", cmd_create },   // no response
-    { "delete", cmd_delete },   // no response
     { "fetch", cmd_fetch },
     { "hashjoin", cmd_hashjoin },
     //{ "load", cmd_load },       // no response
@@ -37,48 +36,57 @@ static struct {
 };
 
 static
-const char **tokenize_args(char *msg, int num_args) {
+const char **tokenize_args(char *msg, size_t *num_args) {
+    char *args_start = strchr(msg, OPEN_PAREN);
+    char *end = strchr(msg, CLOSE_PAREN);
+    size_t argc = count_ch(args_start, COMMA) + 1 + 1; // extra 1 for cmd name
+
+    *end = *args_start = '\0';
+
     char *eq = strchr(msg, EQUALS);
+    char *cmd = (eq) ? eq + 1 : msg;
+
     char *comma = NULL;
-    int i = 0;
     if (eq) {
         *eq = '\0';
-        i = (comma = strchr(msg, COMMA)) ? 2 : 1;
-        num_args += i;
+        argc += (comma = strchr(msg, COMMA)) ? 2 : 1;   // one or two return vars;
         *eq = EQUALS;
     }
 
-    const char **args_arr = malloc(num_args * sizeof(void *) + 1);
+    const char **args_arr = malloc(argc * sizeof(void *) + 1);
 
-    char *start = strchr(msg, OPEN_PAREN) + 1;
-    char *end = strchr(msg, CLOSE_PAREN);
-    *end = '\0';
     char *sep = ",";
-    for (char *tmp, *arg = strtok_r(start, sep, &tmp);
+    size_t i = 0;
+    for (char *tmp, *arg = strtok_r(args_start + 1, sep, &tmp);
          arg;
          arg = strtok_r(NULL, sep, &tmp)) { args_arr[i++] = arg; }
 
     if (eq) {
-        args_arr[0] = msg;
-        if (comma) {
+        args_arr[i++] = msg;
+        if (comma) {    // two return vars
             *comma = '\0';
-            args_arr[1] = comma + 1;
+            args_arr[i++] = comma + 1;
         }
         *eq = '\0';
     }
 
+    args_arr[i++] = cmd;
     args_arr[i] = NULL;
+
+    *num_args = argc;
+    assert (argc == i);
     return args_arr;
 }
 
+/*
 static inline size_t get_cmd_len(char *payload, char *open_paren) {
     char *eq = strchr(payload, EQUALS);
     return eq ? open_paren - (eq + 1) : open_paren - payload;
 }
-
-static cmdptr get_cmdptr(char *req, size_t len) {
+*/
+static cmdptr get_cmdptr(const char *cmd) {
     for (size_t i = 0; i < sizeof command_map; i++)
-        if (!strncasecmp(req, command_map[i].cmd, len))
+        if (!strcasecmp(cmd, command_map[i].cmd))
             return command_map[i].fnptr;
     return NULL;
 }
@@ -111,11 +119,14 @@ db_operator *parse_command(message *recv_message, message *send_message) {
         return NULL;
     }
 
-    char *args_start = strchr(recv_message->payload, OPEN_PAREN);
-    int argc = count_ch(args_start, COMMA) + 1;
-    const char **argv = tokenize_args(recv_message->payload, argc);
-    size_t len = get_cmd_len(recv_message->payload, args_start);
-    cmdptr fn = get_cmdptr(recv_message->payload, len);
+    size_t argc;
+    const char **argv = tokenize_args(recv_message->payload, &argc);
+    for (size_t j = 0; j < argc; j++) {
+        cs165_log(stderr, "%s ", argv[j]);
+    }
+    cs165_log(stderr, "\n");
+
+    cmdptr fn = get_cmdptr(argv[argc-1]);
 
     if (!fn) {  // should never happen
         send_message->status = UNKNOWN_COMMAND;
@@ -131,7 +142,13 @@ db_operator *parse_command(message *recv_message, message *send_message) {
         return dbo;
     }
 
-    send_message->status = OK_WAIT_FOR_RESPONSE;
+    if (dbo->type == TUPLE) {
+        send_message->status = OK_WAIT_FOR_RESPONSE;
+        send_message->payload_type = dbo->msgtype;
+    } else {
+        send_message->status = OK_DONE;
+    }
+
     return dbo;
 }
 
