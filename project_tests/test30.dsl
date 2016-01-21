@@ -1,0 +1,5 @@
+-- Needs test08.dsl and test29.dsl to have been executed first.
+-- Correctness test: Test for updates on columns with index 
+-- 
+-- SELECT col1 FROM tbl2 WHERE col2 > -100 AND col2 < 100;
+--
