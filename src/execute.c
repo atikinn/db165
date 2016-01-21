@@ -13,20 +13,10 @@
 #include "message.h"
 #include "utils.h"
 #include "vector.h"
+#include "sindex.h"
+#include "btree.h"
 
 #define DEFAULT_TABLE_COUNT 8
-
-static
-unsigned int next_pow2(unsigned int n) {
-    n--;
-    n |= n >> 1;
-    n |= n >> 2;
-    n |= n >> 4;
-    n |= n >> 8;
-    n |= n >> 16;
-    n++;
-    return n;
-}
 
 static
 struct db *create_db(char *db_name) {
@@ -42,7 +32,7 @@ struct db *create_db(char *db_name) {
 
 static
 struct table *create_table(db* db, char* name, size_t max_cols) {
-    struct table t = { .name = name, .length = 0, .clustered = 0, .col_count = 0 };
+    struct table t = { .name = name, .length = 0, .clustered = max_cols, .col_count = 0 };
     t.col = malloc(sizeof(struct column) * max_cols);
     assert(t.col);
 
@@ -53,12 +43,35 @@ struct table *create_table(db* db, char* name, size_t max_cols) {
 
 static
 struct column *create_column(table *table, char* name, bool sorted) {
-    struct column c = { .name = name, .index = NULL, .table = table };
+    struct column c = { .name = name, .index = NULL, .table = table, .clustered = false };
     vector_init(&c.data, 16);
     assert(c.data.vals);
-    if (sorted) table->clustered = table->col_count;    // clustered
+    if (sorted) {
+        table->clustered = table->col_count;
+        c.clustered = true;
+    }
     table->col[table->col_count] = c;
-    return &table->col[table->col_count++];;
+    return &table->col[table->col_count++];
+}
+
+static
+void create_index(struct column *col, enum index_type type) {
+    switch(type) {
+        case SORTED:
+            col->index = malloc(sizeof *col->index);
+            assert(col->index);
+            col->index->type = type;
+            col->index->index = sindex_create(&col->data);
+            return;
+        case BTREE:
+            col->index = malloc(sizeof *col->index);
+            assert(col->index);
+            col->index->type = type;
+            col->index->index = btree_create(col->clustered);
+            btree_load(col->index->index, &col->data);
+            return;
+        case IDX_INVALID: assert(false);
+    }
 }
 
 static status create(db_operator *query) {
@@ -79,14 +92,19 @@ static status create(db_operator *query) {
             ret = map_insert(query->assign_var, tbl, ENTITY);
             st.code = ret ? OK : ERROR;
             st.message = "table created";
+            cs165_log(stderr, "%s %s\n", st.message, query->create_name);
             break;
         case(CREATE_COL):
             col = create_column(query->tables, query->create_name, query->sorted);
             ret = map_insert(query->assign_var, col, ENTITY);
+            cs165_log(stderr, "inserted %s with name %s\n", query->assign_var, col->name);
             st.code = ret ? OK : ERROR;
             st.message = "column created";
+            cs165_log(stderr, "%s %s\n", st.message, query->create_name);
             break;
-        case(CREATE_IDX): break;
+        case(CREATE_IDX):
+            create_index(query->columns, query->idx_type);
+            break;
         default: break;
     }
     return st;
@@ -94,28 +112,112 @@ static status create(db_operator *query) {
 
 //////////////////////////////////////////////////////////////////////////////
 
-static inline
-void column_insert(struct column *c, int val) {
-    // TODO after B-tree get rid of vector here to speed up insertions
-    vector_push(&c->data, val);
-
-    if (c->index) {
-        ; //TODO
+static
+void index_insert(struct column *c, int val, size_t pos, size_t sz) {
+    if (c->index == NULL) return;
+    switch(c->index->type) {
+        case BTREE:
+            btree_insert(c->index->index, val, pos);
+            return;
+        case SORTED:
+            c->index->index = sindex_insert(c->index->index, pos, val, sz);
+            return;
+        case IDX_INVALID: assert(false);
     }
 }
 
 static
 status rel_insert(struct table *tbl, int *row) {
-    // TODO clustered check
     status st;
 
-    for (unsigned j = 0; j < tbl->col_count; j++)
-        column_insert(&tbl->col[j], row[j]);
+    if (tbl->clustered < tbl->col_count) {
+        size_t pos = vector_insert_sorted(&tbl->col[tbl->clustered].data, row[tbl->clustered]);
+        for (unsigned j = 0; j < tbl->col_count; j++) {
+            if (j != tbl->clustered) vector_insert(&tbl->col[j].data, row[j], pos);
+            index_insert(&tbl->col[j], row[j], pos, tbl->length);
+        }
+    } else {
+        for (unsigned j = 0; j < tbl->col_count; j++) {
+            vector_insert(&tbl->col[j].data, row[j], tbl->length);
+            index_insert(&tbl->col[j], row[j], tbl->length, tbl->length);
+        }
+    }
+
     tbl->length++;
 
     st.code = OK;
     st.message = "insert completed";
     return st;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// TODO: binary tree integration: search
+static
+int *sort_clustered(struct column *col) {
+    struct sindex *zip = sindex_create(&col->data);
+
+    int *idxs = malloc(col->data.sz * sizeof *idxs);
+    for (size_t j = 0; j < col->data.sz; j++) {
+        col->data.vals[j] = zip[j].val;
+        idxs[j] = zip[j].pos;
+    }
+
+    free(zip);
+    return idxs;
+}
+
+static inline
+void align_column(struct column *col, int *row, int n) {
+    int *indices = malloc(n * sizeof *indices);
+    memcpy(indices, row, n * sizeof *indices);
+
+    int *a = col->data.vals;
+    int i_src, i_dst;
+    for (int i_dst_first = 0; i_dst_first < n; i_dst_first++) {
+        i_src = indices[i_dst_first];       /* Check if this element needs to be permuted */
+        assert(i_src < n);
+
+        if (i_src == i_dst_first) continue; /* This element is already in place */
+
+        i_dst = i_dst_first;
+        int pending = a[i_dst];
+
+        do {                                /* Follow the permutation cycle */
+            a[i_dst] = a[i_src];
+            indices[i_dst] = i_dst;
+
+            i_dst = i_src;
+            i_src = indices[i_src];
+            assert(i_src != i_dst);
+
+        } while (i_src != i_dst_first);
+
+        a[i_dst] = pending;
+        indices[i_dst] = i_dst;
+    }
+
+    free(indices);
+}
+
+static inline
+void bulk_rel_insert(struct table *tbl, int *row) {
+    for (unsigned j = 0; j < tbl->col_count; j++)
+        vector_push(&tbl->col[j].data, row[j]);
+    tbl->length++;
+}
+
+static
+void mk_cluster(struct table *tbl) {
+    int *alignment = sort_clustered(&tbl->col[tbl->clustered]);
+
+    for (size_t j = 0; j < tbl->clustered; j++)
+        align_column(&tbl->col[j], alignment, tbl->length);
+
+    for (size_t j = tbl->clustered + 1; j < tbl->col_count; j++)
+        align_column(&tbl->col[j], alignment, tbl->length);
+
+    free(alignment);
+    cs165_log(stderr, "clustered sorting, %d\n", tbl->clustered);
 }
 
 static
@@ -133,35 +235,119 @@ struct status bulk_load(struct table *tbl, char *rawdata) {
                        num = strtok_r(NULL, comma, &brkn)) {
                 row[i++] = strtol(num, NULL, 10);
             }
-            rel_insert(tbl, row);
+            bulk_rel_insert(tbl, row);
     }
 
-    cs165_log(stderr, "bulk load complete, %d\n", tbl->length);
+    if (tbl->clustered < tbl->col_count) mk_cluster(tbl);
+
+    //cs165_log(stderr, "bulk load complete, %d\n", tbl->length);
     return st;
 }
 
 //////////////////////////////////////////////////////////////////////////////
 
+// TODO: interpolation search
+
+static
+int index_of_left(int *a, int left_range, int length) {
+    if (a[length-1] < left_range) return -1;
+
+    int low = 0;
+    int high = length-1;
+
+    while (low <= high) {
+        int mid = low + ((high - low) / 2);
+
+        if (a[mid] >= left_range)
+            high = mid - 1;
+        else //if(a[mid]<i)
+            low = mid + 1;
+    }
+
+    return high + 1;
+}
+
+static
+int index_of_right(int *a, int right_range, int length) {
+    if (a[0] > right_range) {
+        cs165_log(stderr, "\t%d, %d\n", a[0], right_range);
+        return -1;
+    }
+
+    int low = 0;
+    int high = length - 1;
+
+    while (low <= high) {
+        int mid = low + ((high - low) / 2);
+
+        if (a[mid] > right_range)
+            high = mid - 1;
+        else //if(a[mid]<i)
+            low = mid + 1;
+    }
+
+    return low - 1;
+}
+
+static inline
+size_t scan_clustered(int **v, int low, int high, size_t sz, int *vals) {
+    int low_idx = index_of_left(vals, low, sz);
+    int high_idx = index_of_right(vals, high, sz);
+    //bool flag = low_idx == -1 || high_idx == -1 || low_idx > high_idx;
+
+    size_t num_tuples = low_idx > high_idx ? 0 : high_idx - low_idx + 1;
+    cs165_log(stderr, "scan_clustered: %d %d %zu\n", low_idx, high_idx, num_tuples);
+    int *vec = malloc(num_tuples * sizeof *vec);
+    for (size_t j = 0; j < num_tuples; j++)
+        vec[j] = low_idx + j;
+    *v = vec;
+    return num_tuples;
+}
+
+static inline
+size_t scan_unsorted(int **v, int low, int high, size_t sz, int *vals) {
+    size_t num_tuples = 0;
+    int *vec = malloc(sizeof(int) * sz);
+    for (size_t j = 0; j < sz; j++) {
+        vec[num_tuples] = j;
+        num_tuples += (vals[j] >= low && vals[j] < high);
+        /* if (data->vals[j] >= low && data->vals[j] < high)
+            vec[num_tuples++] = j; */
+    }
+    cs165_log(stderr, "scan_unsorted: %zu\n", num_tuples);
+    *v = realloc(vec, sizeof(int) * num_tuples);
+    return num_tuples;
+}
+
 static
 struct status col_scan(int low, int high, struct column *col, struct cvec **r) {
     status st;
-
-    struct vec *data = &col->data;
+    struct vec const *data = &col->data;
+    struct vec *btree_result = NULL;
     size_t num_tuples = 0;
-    int *vec = malloc(sizeof(int) * data->sz);
-    for (size_t j = 0; j < data->sz; j++) {
-        vec[num_tuples] = j;
-        num_tuples += (data->vals[j] >= low && data->vals[j] < high);
+    int *vec = NULL;
+    if (col->index) {
+        switch (col->index->type) {
+            case SORTED:
+                num_tuples = sindex_scan(&vec, low, high, data->sz, col->index->index);
+                break;
+            case BTREE:
+                btree_result = btree_rsearch(col->index->index, low, high);
+                num_tuples = btree_result->sz;
+                vec = btree_result->vals;
+                break;
+            case IDX_INVALID: assert(false);
+        }
+    } else if (col->clustered) {
+        num_tuples = scan_clustered(&vec, low, high, data->sz, data->vals);
+    } else {
+        num_tuples = scan_unsorted(&vec, low, high, data->sz, data->vals);
     }
 
-    /*
-    if (data->vals[j] >= low && data->vals[j] < high)
-        vec[num_tuples++] = j;
-    */
-    cs165_log(stdout, "select: sz %d, low %d, high %d, num_tuples %d\n", data->sz, low, high, num_tuples);
+    //cs165_log(stdout, "select: sz %d, low %d, high %d, num_tuples %d\n", data->sz, low, high, num_tuples);
     struct cvec *ret = malloc(sizeof(struct cvec));
     ret->num_tuples = num_tuples;
-    ret->values = realloc(vec, sizeof(int) * num_tuples);;
+    ret->values = vec;
     ret->type = VECTOR;
     *r = ret;
 
@@ -172,7 +358,7 @@ static
 struct status vec_scan(int low, int high, struct cvec *pos, struct cvec *vals, struct cvec **r) {
     status st;
 
-    size_t length = pos->num_tuples;
+    size_t const length = pos->num_tuples;
     size_t num_tuples = 0;
     int *vec = malloc(sizeof(int) * length);
     for (size_t j = 0; j < length; j++) {
@@ -180,7 +366,6 @@ struct status vec_scan(int low, int high, struct cvec *pos, struct cvec *vals, s
         num_tuples += (vals->values[j] >= low && vals->values[j] < high);
     }
 
-    //cs165_log(stdout, "select: sz %d, low %d, high %d, num_tuples %d\n", length, low, high, num_tuples);
     struct cvec *ret = malloc(sizeof(struct cvec));
     ret->num_tuples = num_tuples;
     ret->values = realloc(vec, sizeof(int) * num_tuples);;
@@ -190,6 +375,7 @@ struct status vec_scan(int low, int high, struct cvec *pos, struct cvec *vals, s
     return st;
 }
 
+    //cs165_log(stdout, "select: sz %d, low %d, high %d, num_tuples %d\n", length, low, high, num_tuples);
 //////////////////////////////////////////////////////////////////////////////
 
 static status col_fetch(struct column *col, struct cvec *v, struct cvec **r) {
@@ -218,13 +404,14 @@ struct status reconstruct(struct cvec *vecs, struct cvec **r) {
 }
 
 static
-struct cvec *find_min(int *vals, size_t sz) {
+struct cvec *find_min(int *vals, size_t sz, bool sorted) {
     struct cvec *min = malloc(sizeof(struct cvec));
     assert(min);
 
     int m = vals[0];
-    for (size_t j = 0; j < sz; j++)
-        m = (vals[j] < m) ? vals[j] : m;
+    if (!sorted)
+        for (size_t j = 1; j < sz; j++)
+            m = (vals[j] < m) ? vals[j] : m;
 
     min->ival = m;
     min->num_tuples = 1;
@@ -233,13 +420,14 @@ struct cvec *find_min(int *vals, size_t sz) {
 }
 
 static
-struct cvec *find_max(int *vals, size_t sz) {
+struct cvec *find_max(int *vals, size_t sz, bool sorted) {
     struct cvec *max = malloc(sizeof(struct cvec));
     assert(max);
 
-    int m = vals[0];
-    for (size_t j = 0; j < sz; j++)
-        m = (vals[j] > m) ? vals[j] : m;
+    int m = vals[sz-1];
+    if (!sorted)
+        for (size_t j = 0; j < sz-1; j++)
+            m = (vals[j] > m) ? vals[j] : m;
 
     max->ival = m;
     max->num_tuples = 1;
@@ -251,9 +439,11 @@ static
 struct cvec *find_avg(int *vals, size_t sz) {
     struct cvec *avg = malloc(sizeof(struct cvec));
     assert(avg);
+
     long int sum = 0;
     for (size_t j = 0; j < sz; j++) sum += (long int) vals[j];
     avg->dval = (long double) sum / sz;
+
     fprintf(stderr, "avg = %Lf\n", avg->dval);
     //cs165_log(stderr, "average = %Lf\n", avg->dval);
     avg->num_tuples = 1;
@@ -262,18 +452,50 @@ struct cvec *find_avg(int *vals, size_t sz) {
 }
 
 static
+struct cvec *aggregate_max(struct column *c) {
+    if (c->clustered)
+        return find_max(c->data.vals, c->data.sz, true);
+
+    /*
+    if (c->index) {
+        switch (c->index->type) {
+            // TODO change to sindex fmin
+            case SORTED: return NULL;
+            // TODO change to btree function
+            case BTREE: return NULL;
+            case IDX_INVALID: assert(false);
+        }
+    }
+    */
+    return find_max(c->data.vals, c->data.sz, false);
+}
+
+static
+struct cvec *aggregate_min(struct column *c) {
+    if (c->clustered)
+        return find_min(c->data.vals, c->data.sz, true);
+
+    /*
+    if (c->index) {
+        switch (c->index->type) {
+            // TODO change to sindex fmin
+            case SORTED: return NULL;
+            // TODO change to btree function
+            case BTREE: return NULL;
+            case IDX_INVALID: assert(false);
+        }
+    }
+    */
+    return find_min(c->data.vals, c->data.sz, false);
+}
+
+static
 struct status aggregate_col(struct column *c, enum aggr agg, struct cvec **r) {
     status st;
     switch(agg) {
-        case MIN:
-            *r = find_min(c->data.vals, c->data.sz);
-            break;
-        case MAX:
-            *r = find_max(c->data.vals, c->data.sz);
-            break;
-        case AVG:
-            *r = find_avg(c->data.vals, c->data.sz);
-            break;
+        case MIN: *r = aggregate_min(c); break;
+        case MAX: *r = aggregate_max(c); break;
+        case AVG: *r = find_avg(c->data.vals, c->data.sz); break;
     }
     return st;
 }
@@ -283,10 +505,10 @@ struct status aggregate_res(struct cvec *vals, enum aggr agg, struct cvec **r) {
     status st;
     switch(agg) {
         case MIN:
-            *r = find_min(vals->values, vals->num_tuples);
+            *r = find_min(vals->values, vals->num_tuples, false);
             break;
         case MAX:
-            *r = find_max(vals->values, vals->num_tuples);
+            *r = find_max(vals->values, vals->num_tuples, false);
             break;
         case AVG:
             *r = find_avg(vals->values, vals->num_tuples);
@@ -300,7 +522,7 @@ struct status add_vecs(struct cvec *vals1, struct cvec *vals2, struct cvec **r) 
     status st;
 
     size_t num_tuples = vals1->num_tuples;
-    long int *addv = malloc(sizeof *addv * num_tuples);
+    long int *addv = malloc(num_tuples * sizeof *addv);
     for (size_t j = 0; j < num_tuples; j++)
         addv[j] = (long int) vals1->values[j] + (long int) vals2->values[j];
 
@@ -358,7 +580,6 @@ struct status execute_db_operator(db_operator *query, struct cvec **r) {
             st = reconstruct(query->vals1, r);
             insert = false;
             break;
-
         case(SELECT):
             st = col_scan(query->range.low, query->range.high, query->columns, r);
             break;
@@ -383,9 +604,10 @@ struct status execute_db_operator(db_operator *query, struct cvec **r) {
 
         case(JOIN): break;
         case(HASH_JOIN): break;
-        case(MERGE_JOIN): break;
         case(DELETE): break;
         case(UPDATE): break;
+
+        case(MERGE_JOIN): break;
         default: break;
     }
 

@@ -16,6 +16,8 @@
 #include "dbo.h"
 #include "symtable.h"
 #include "sync.h"
+#include "sindex.h"
+#include "btree.h"
 
 static const char *DBPATH = "./db";
 static const char *METAFILE = "meta";
@@ -26,6 +28,7 @@ enum meta_state { DB_RECORD, TBL_RECORD, COL_RECORD };
 
 struct db_record {
     char tbl_count;
+    char capacity;
     char name[];
 };
 
@@ -33,6 +36,11 @@ struct tbl_record {
     size_t length;
     char col_count;
     char clustered;
+    char name[];
+};
+
+struct col_record {
+    char idx_type;
     char name[];
 };
 
@@ -91,6 +99,8 @@ int mkfile(size_t sz, const char *path) {
     return fd;
 }
 
+//////////////////////////////////////////////////////////////////////////////
+
 char *vbsnprintf(char *buf, size_t buflen, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -108,8 +118,8 @@ char *vbsnprintf(char *buf, size_t buflen, const char *fmt, ...) {
 }
 
 static inline
-void persist_data(struct vec *data, const char *path) {
-    size_t sz = data->sz * sizeof(int);
+void persist_data(void *data, size_t num_elems, size_t elsz, const char *path) {
+    size_t sz = num_elems * elsz;
 
     int fd = mkfile(sz, path);
     if (fd == -1) return;
@@ -122,7 +132,7 @@ void persist_data(struct vec *data, const char *path) {
 	return;
     }
 
-    memcpy(map, (void *)data->vals, data->sz * sizeof(int));
+    memcpy(map, data, sz);
 
     if (munmap(map, sz) == -1) {
 	perror("Error un-mmapping the file");
@@ -133,10 +143,26 @@ void persist_data(struct vec *data, const char *path) {
 }
 
 static inline
+void persist_index(struct column *col, const char *tname) {
+    char buf[PATHLEN];
+    char *path;
+    switch(col->index->type) {
+	case SORTED:
+	    path = vbsnprintf(buf, sizeof buf, "%s/%s.%s.sorted.bin", DBPATH, tname, col->name);
+	    cs165_log(stderr, "%s: %s\n", tname, path);
+	    persist_data(col->index->index, col->data.sz, sizeof (struct sindex), path);
+	    if (path != buf) free(path);
+	case BTREE: break; //TODO
+	case IDX_INVALID: break;
+    }
+}
+
+static inline
 void persist_col(struct column *col, const char *tname) {
     char buf[PATHLEN];
     char *path = vbsnprintf(buf, sizeof buf, "%s/%s.%s.bin", DBPATH, tname, col->name);
-    persist_data(&col->data, path);
+    cs165_log(stderr, "%s: %s\n", tname, path);
+    persist_data(col->data.vals, col->data.sz, sizeof (int), path);
     if (path != buf) free(path);
     return;
 }
@@ -148,14 +174,17 @@ void persist_db(struct db *db) {
         for (size_t j = 0; j < tbl->col_count; j++) {
             struct column *col = &tbl->col[j];
             cs165_log(stderr, "%d = %d\n", tbl->length, col->data.vals[tbl->length-1]);
-            persist_col(col, tbl->name) ;
+            persist_col(col, tbl->name);
+	    if (col->index) persist_index(col, tbl->name);
         }
     }
 }
 
+//////////////////////////////////////////////////////////////////////////////
+
 static inline
 size_t get_col_meta_sz(struct column *col) {
-    return strlen(col->name) + 1;
+    return strlen(col->name) + 1 + sizeof(struct col_record);
 }
 
 static inline
@@ -163,7 +192,9 @@ size_t col_meta(struct column *col, char *meta, size_t sz, size_t rec_size) {
     char buf[rec_size];
     buf[rec_size-1] = '|';
 
-    memcpy(buf, col->name, rec_size-1);
+    struct col_record *rec = (struct col_record *) buf;
+    rec->idx_type = col->index ? (unsigned char) col->index->type + '0' : '0';
+    memcpy(rec->name, col->name, strlen(col->name));
 
     memcpy(meta + sz, buf, rec_size);
     return rec_size;
@@ -171,7 +202,7 @@ size_t col_meta(struct column *col, char *meta, size_t sz, size_t rec_size) {
 
 static inline
 size_t get_tbl_meta_sz(struct table *tbl) {
-    return strlen(tbl->name) + sizeof tbl->length + 2 + 1;
+    return strlen(tbl->name) + 1 + sizeof tbl->length + 2;
 }
 
 static inline
@@ -191,7 +222,7 @@ size_t tbl_meta(struct table *tbl, char *meta, size_t sz, size_t rec_size) {
 
 static inline
 size_t get_db_meta_sz(struct db *db) {
-    return strlen(db->name) + 1 + 1;
+    return strlen(db->name) + 1 + sizeof(struct db_record);
 }
 
 static inline
@@ -201,6 +232,7 @@ size_t db_meta(struct db *db, char *meta, size_t sz, size_t rec_size) {
 
     struct db_record *rec = (struct db_record *) buf;
     rec->tbl_count = (unsigned char) db->table_count;
+    rec->capacity = (unsigned char) db->capacity;
     memcpy(rec->name, db->name, strlen(db->name));
 
     memcpy(meta + sz, buf, rec_size);
@@ -248,8 +280,7 @@ static inline
 void persist_meta(char *meta, size_t sz) {
     char buf[PATHLEN];
     char *path = vbsnprintf(buf, sizeof buf, "%s/%s.bin", DBPATH, METAFILE);
-    struct vec v = { sz / 4 + 1, -1, (int *) meta };
-    persist_data(&v, path);
+    persist_data(meta, sz, sizeof (char), path);
     if (path != buf) free(path);
     return;
 }
@@ -275,8 +306,8 @@ void clean_db(struct db *db) {
 	for (size_t j = 0; j < tbl->col_count; j++) {
 	    struct column *col = &tbl->col[j];
 	    free(col->name);
-	    free(col->data.vals);
-	    if (col->index) free(col->index);
+	    free(col->data.vals);		//TODO memleak: vector
+	    if (col->index) free(col->index);	//TODO memleak: index
 	}
 	free(tbl->name);
 	free(tbl->col);
@@ -299,7 +330,21 @@ void sync(void) {
 
 static
 struct column restore_col(char *record, struct table *tbl) {
-    struct column col = { .name = strdup(record), .table = tbl, .index = NULL };
+    struct col_record *rec = (struct col_record *) record;
+    bool clustered = tbl->clustered == tbl->col_count;
+    struct column col = { .name = strdup(rec->name), .table = tbl,
+			  .index = NULL, .clustered = clustered };
+    cs165_log(stderr, "clustered = %d\n", col.clustered);
+    enum index_type idx_type = rec->idx_type - '0';
+    switch(idx_type) {
+	case IDX_INVALID: break;
+	case SORTED:
+	case BTREE:
+	    col.index = malloc(sizeof(struct column_index));
+	    col.index->type = idx_type;
+	    col.index->index = NULL;
+	    break;
+    }
     vector_init(&col.data, tbl->length);
     return col;
 }
@@ -320,7 +365,7 @@ struct db *restore_db(char *record) {
     struct db *db = malloc(sizeof *db);
     assert (db);
     db->table_count = 0;
-    db->capacity = rec->tbl_count;
+    db->capacity = rec->capacity;
     db->tables = malloc(sizeof(struct table) * db->capacity);
     assert(db->tables);
     db->name = strdup(rec->name);
@@ -367,6 +412,7 @@ struct db *restore(char *meta, size_t sz) {
     }
 
     assert(state == TBL_RECORD);
+    assert(db->table_count <= db->capacity);
     return db;
 }
 
@@ -385,6 +431,25 @@ struct db *restore_meta(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 static
+void restore_sindex(struct column *col) {
+    char *tname = col->table->name;
+    char buf[PATHLEN];
+    char *path = vbsnprintf(buf, sizeof buf, "%s/%s.%s.sorted.bin", DBPATH, tname, col->name);
+    char *data;
+    off_t sz = filemap(path, &data, PROT_READ);
+    col->index->index = sindex_alloc(col->data.sz);
+    memcpy(col->index->index, data, sz);
+    fileunmap(data, sz);
+}
+
+static
+void restore_btree(struct column *col) {
+    /* For now recreate from scratch */
+    col->index->index = btree_create(col->clustered);
+    btree_load(col->index->index, &col->data);
+}
+
+static
 void restore_col_data(struct column *col) {
     char *tname = col->table->name;
     char buf[PATHLEN];
@@ -395,7 +460,7 @@ void restore_col_data(struct column *col) {
     memcpy(col->data.vals, data, sz);
     col->data.sz = sz / sizeof (int);
     col->data.capacity = col->data.sz;
-    cs165_log(stdout, "col capacity %d\n", col->data.capacity);
+    cs165_log(stdout, "col capacity %d, %d\n", col->data.sz, col->data.vals[col->data.sz-1]);
     fileunmap(data, sz);
 }
 
@@ -403,8 +468,17 @@ static
 void restore_data(struct db *db) {
     for (size_t j = 0; j < db->table_count; j++) {
 	struct table *tbl = &db->tables[j];
-	for (size_t i = 0; i < tbl->col_count; i++)
-	    restore_col_data(&tbl->col[i]);
+	for (size_t i = 0; i < tbl->col_count; i++) {
+	    struct column *col = &tbl->col[i];
+	    restore_col_data(col);
+	    if (col->index) {
+		switch(col->index->type) {
+		    case SORTED: restore_sindex(col); break;
+		    case BTREE: restore_btree(col); break;
+		    case IDX_INVALID: assert(false);
+		}
+	    }
+	}
     }
     return;
 }

@@ -46,9 +46,10 @@ typedef enum DataType {
  * Flag to identify index type. Defines an enum for the different possible column indices.
  * Additonal types are encouraged as extra.
  **/
-typedef enum IndexType {
+typedef enum index_type {
+    IDX_INVALID,
     SORTED,
-    B_PLUS_TREE,
+    BTREE,
 } IndexType;
 
 /**
@@ -62,7 +63,7 @@ typedef enum IndexType {
  *       working with the index.
  **/
 typedef struct column_index {
-    IndexType type;
+    enum index_type type;
     void *index;
 } column_index;
 
@@ -85,6 +86,7 @@ typedef struct column column;
 struct column {
     char *name;
     struct table *table;
+    bool clustered;
     column_index *index;
     struct vec data;
 };
@@ -234,6 +236,7 @@ typedef struct db_operator {
     size_t table_size;          // for CREATE_TABLE only
     char *rawdata;              // for BULK LOAD
 
+    enum index_type idx_type;   // Index type
     enum aggr agg;              // AGGREAGTE type
 
     struct {
@@ -378,7 +381,7 @@ status drop_table(db* db, table* table);
  * type     : the enum representing the index type to be created.
  * returns  : the status of the operation.
  **/
-status create_index(column* col, IndexType type);
+//status create_index(column* col, enum index_type type);
 
 //status insert(column *col, int data);
 status delete(column *col, int *pos);

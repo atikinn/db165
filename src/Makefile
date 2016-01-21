@@ -55,7 +55,7 @@ $(DEPSDIR)/stamp $(BUILDSTAMP):
 client: client.o utils.o
 	$(CC) $(CFLAGS) $(DEPCFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
 
-server: server.o dbo.o utils.o parse.o symtable.o execute.o vector.o sync.o
+server: server.o dbo.o utils.o parse.o symtable.o execute.o vector.o sync.o sindex.o btree.o bset.o ccsort.o
 	$(CC) $(CFLAGS) $(DEPCFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS) $(MACROS)
 
 clean:

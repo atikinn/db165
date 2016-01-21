@@ -27,14 +27,14 @@ struct element *map_find(const char *var) {
     size_t num_elements = var_map[idx].num_elems;
     uint64_t var_hash = 0;
     strncpy((char *) &var_hash, var, sizeof var_hash);
-    cs165_log(stderr, "search for %s -> %lu in %d\n", var, var_hash, idx);
+    //cs165_log(stderr, "search for %s -> %lu in %d\n", var, var_hash, idx);
     for (size_t i = 0; i < num_elements; i++) {
         struct element *e = &var_map[idx].data[i];
-        cs165_log(stderr, "check %s -> %lu with value %p\n", e->key, e->keyhash, e->value);
+        //cs165_log(stderr, "check %s -> %lu with value %p\n", e->key, e->keyhash, e->value);
         if (e->keyhash == var_hash && !strcmp(e->key, var))
             return e;
     }
-    cs165_log(stderr, "search: not found\n");
+    //cs165_log(stderr, "search: not found\n");
     return NULL;
 }
 
@@ -70,7 +70,7 @@ bool map_insert(char *key, void *value, enum vartype type) {
     var_map[idx].data[num_elems].key = key;
     var_map[idx].data[num_elems].keytype = type;
     var_map[idx].num_elems++;
-    cs165_log(stderr, "inserted %s -> %p in %d with key %lu\n", key, value, idx, keyhash);
+    //cs165_log(stderr, "inserted %s -> %p in %d with key %lu\n", key, value, idx, keyhash);
     return true;
 }
 

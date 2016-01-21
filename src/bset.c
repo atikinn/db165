@@ -23,7 +23,7 @@ void bset_insert0(bset *set, int idx, size_t maxsz) {
     for (int i = 0; i < idx; i++)
 	if (bset_isset(set, i)) bset_set(new, i);
 
-    for (int i = idx; i < (maxsz * 32) - 1; i++)
+    for (unsigned long i = idx; i < (maxsz * 32) - 1; i++)
 	if (bset_isset(set, i)) bset_set(new, i+1);
 
     memcpy(set, new, sizeof new);

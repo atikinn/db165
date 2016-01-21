@@ -30,7 +30,7 @@ struct btnode {
     bset idref[FANOUTSET];  // only used in leafs to distinguish between id and ids
     union value {
 	struct btnode *child;
-	size_t id;
+	int id;
 	struct vec *ids;
     } values[FANOUT];
 };
@@ -82,12 +82,12 @@ malloc_failed:
 
 void btree_load(struct btree *bt, struct vec *v) {
     if (bt->leading) {
-	for (int j = 0; j < v->sz; j++)
+	for (size_t j = 0; j < v->sz; j++)
 	    btree_insert(bt, v->vals[j], j);
     } else {	// or do bulk
 	struct sorted_entry *zipped = zipWithIdx(v);
 	ccqsort(zipped, v->sz, sizeof *zipped);
-	for (int j = 0; j < v->sz; j++)
+	for (size_t j = 0; j < v->sz; j++)
 	    btree_insert(bt, zipped[j].value, zipped[j].clustered_id);
 	free(zipped);
     }
@@ -126,10 +126,10 @@ void traverse_bt(struct btnode *x) {
 	for (int j = 0; j < x->ksz; j++) {
 	    fprintf(stderr, "%d (", x->keys[j]);
 	    if (bset_isset(x->idref, j)) {
-		for (int i = 0; i < x->values[j].ids->sz; i++)
+		for (size_t i = 0; i < x->values[j].ids->sz; i++)
 		    fprintf(stderr, " %d ", x->values[j].ids->vals[i]);
 	    } else {
-		fprintf(stderr, " %zu ", x->values[j].id);
+		fprintf(stderr, " %d ", x->values[j].id);
 	    }
 	    fprintf(stderr, ") ");
 	}
@@ -257,7 +257,7 @@ int insert_id_atpos(union value *a, int pos, int sz, int id) {
 static inline
 void insert_id(union value *x, int id, bool idref) {
     if (idref) {
-	vector_insert(x->ids, id);
+	vector_insert_sorted(x->ids, id);
 	return;
     }
 
@@ -277,7 +277,7 @@ void increment_helper(struct btnode *leaf, int idx) {
     for (int j = idx; j < leaf->ksz; j++) {
 	if (bset_isset(leaf->idref, j)) {
 	    struct vec *v = leaf->values[j].ids;
-	    for (int i = 0; i < v->sz; i++)
+	    for (size_t i = 0; i < v->sz; i++)
 		v->vals[i]++;
 	} else {
 	    leaf->values[j].id++;
@@ -325,7 +325,7 @@ struct split_pair leaf_split(struct btnode *full) {
     for (int j = 0; j < sibling->ksz; j++)
 	sibling->values[j] = full->values[j + full->ksz];
 
-    bset rset[FANOUTSET] = {0};
+    //bset rset[FANOUTSET] = {0};
     for (int j = 0; j < sibling->ksz; j++)
 	if (bset_isset(full->idref, j + full->ksz))
 	    bset_set(sibling->idref, j);
@@ -337,7 +337,7 @@ struct split_pair leaf_split(struct btnode *full) {
 
 static inline
 struct split_pair insert_leaf_helper(struct btnode *node, int k, int id, bool leading) {
-    struct split_pair null = {};
+    struct split_pair null = { NULL, 0 };
     if (node->ksz == MAXKEYS) {
 	struct split_pair split_result = leaf_split(node);
 	//fprintf(stderr, "insert_leaf_helper: %d\n", split_result.sibling->ksz);
@@ -402,7 +402,7 @@ int redistribute(struct btnode *left, struct btnode *right, int pivot) {
 
 static inline
 struct split_pair insert_node_helper(struct btnode *node, struct btnode *sibling, int pivot) {
-    struct split_pair null = {};
+    struct split_pair null = { NULL, 0 };
     if (node->ksz == MAXKEYS) {
 	struct split_pair split_result = node_split(node);
 	if (pivot < split_result.pivot)
@@ -422,7 +422,7 @@ struct split_pair insert_node_helper(struct btnode *node, struct btnode *sibling
 
 static
 struct split_pair insert(struct btnode *node, int k, int id, bool leading) {
-    struct split_pair null = { 0 };
+    struct split_pair null = { NULL, 0 };
     if (node->ntype == INTERNAL) {
 	int i = 0;
 	while (i < node->ksz && k >= node->keys[i]) i++;

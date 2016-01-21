@@ -23,8 +23,8 @@ int value_compar(const void *a, const void *b) {
 struct sorted_entry *zipWithIdx(struct vec *v) {
     struct sorted_entry *zipped = malloc(sizeof(struct sorted_entry) * v->sz);
     assert (zipped != NULL);
-    for (int j = 0; j < v->sz; j++) {
-	zipped[j].value = v->pos[j];
+    for (size_t j = 0; j < v->sz; j++) {
+	zipped[j].value = v->vals[j];
 	zipped[j].clustered_id = j;
     }
     return zipped;

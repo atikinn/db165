@@ -102,7 +102,27 @@ db_operator *cmd_create_column(const char *col_name, const char *db_tbl_name,
     return dbo;
 }
 
-static enum create get_create_type(const char *type) {
+static inline
+enum index_type parse_index_type(const char *idxtype) {
+    if (!strcmp(idxtype, "sorted")) return SORTED;
+    if (!strcmp(idxtype, "btree")) return BTREE;
+    return IDX_INVALID;
+}
+
+static
+db_operator *cmd_create_idx(const char *col_name, const char *idxtype) {
+    db_operator *dbo = malloc(sizeof *dbo);
+    if (dbo == NULL) return NULL;
+
+    dbo->type = CREATE;
+    dbo->create_type = CREATE_IDX;
+    dbo->idx_type = parse_index_type(idxtype);
+    dbo->columns = map_get(col_name);
+    return dbo;
+}
+
+static
+enum create get_create_type(const char *type) {
     if (!strcmp(type, DB)) return CREATE_DB;
     if (!strcmp(type, TBL)) return CREATE_TBL;
     if (!strcmp(type, COL)) return CREATE_COL;
@@ -119,7 +139,8 @@ db_operator *cmd_create(size_t argc, const char **argv) {
             return cmd_create_tbl(argv[1], argv[2], strtol(argv[3], NULL, 10));
         case CREATE_COL:
             return cmd_create_column(argv[1], argv[2], argv[3]);
-        case CREATE_IDX: break;
+        case CREATE_IDX:
+            return cmd_create_idx(argv[1], argv[2]);
         default: break;
     }
     return NULL;

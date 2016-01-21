@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include "vector.h"
+#include <assert.h>
+
 //#include "cs165_api"
 
 #define DEFAULT_CAPACITY 8
@@ -41,9 +43,19 @@ size_t vector_push(struct vec *v, int item) {
     return (v->sz - 1);
 }
 
-size_t vector_insert(struct vec *v, int item) {
-    vector_push(v, item);
-    int j = v->sz - 1;
+size_t vector_insert(struct vec *v, int item, size_t pos) {
+    size_t j = vector_push(v, item);
+    for (; j > pos; j--) {
+        int swap = v->vals[j];
+        v->vals[j] = v->vals[j-1];
+        v->vals[j-1] = swap;
+    }
+    assert(j == pos);
+    return j;
+}
+
+size_t vector_insert_sorted(struct vec *v, int item) {
+    size_t j = vector_push(v, item);
     for (; j > 0 && v->vals[j] < v->vals[j-1]; j--) {
         int swap = v->vals[j];
         v->vals[j] = v->vals[j-1];
