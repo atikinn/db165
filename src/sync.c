@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stddef.h>
+#include <assert.h>
 
 #include "cs165_api.h"
 #include "vector.h"
@@ -300,14 +301,23 @@ void persist_metadata(struct db *db) {
 }
 
 static
+void free_index(struct column *col) {
+    switch(col->index->type) {
+	case SORTED: sindex_free(col->index->index); return;
+	case BTREE: btree_free(col->index->index); return;
+	case IDX_INVALID: assert(false);
+    }
+}
+
+static
 void clean_db(struct db *db) {
     for (size_t i = 0; i < db->table_count; i++) {
 	struct table *tbl = &db->tables[i];
 	for (size_t j = 0; j < tbl->col_count; j++) {
 	    struct column *col = &tbl->col[j];
+	    vector_free(&col->data);
+	    if (col->index) free_index(col);
 	    free(col->name);
-	    free(col->data.vals);		//TODO memleak: vector
-	    if (col->index) free(col->index);	//TODO memleak: index
 	}
 	free(tbl->name);
 	free(tbl->col);
@@ -439,6 +449,7 @@ void restore_sindex(struct column *col) {
     off_t sz = filemap(path, &data, PROT_READ);
     col->index->index = sindex_alloc(col->data.sz);
     memcpy(col->index->index, data, sz);
+    assert(is_sorted(col->index->index, col->data.sz) == true);
     fileunmap(data, sz);
 }
 

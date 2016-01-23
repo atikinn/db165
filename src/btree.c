@@ -4,6 +4,8 @@
 #include <string.h>
 #include <assert.h>
 #include <math.h>
+#include <limits.h>
+
 #include "vector.h"
 #include "bset.h"
 #include "ccsort.h"
@@ -142,6 +144,21 @@ void btree_traverse(struct btree *bt) {
 }
 //////////////////////////////////////////////////////////////////////////////
 
+void free_nodes(struct btnode *node) {
+    if (node->ntype == LEAF) return;
+
+    for (int j = 0; j <= node->ksz; j++) {
+	free_nodes(node->values[j].child);
+	free(node->values[j].child);
+    }
+}
+
+void btree_free(struct btree *bt) {
+    free_nodes(bt->root);
+    free(bt->root);
+    free(bt);
+}
+
 //////////////////////////////////////////////////////////////////////////////
 
 static inline
@@ -172,6 +189,16 @@ int indexOf(int key, int *a, int sz) {
     }
     return -1;
     */
+}
+
+int btree_max(struct btree *bt) {
+    if (bt == NULL) return INT_MAX;
+
+    struct btnode *node = bt->root;
+    while (node->ntype == INTERNAL)
+	node = node->values[node->ksz].child;
+
+    return node->keys[node->ksz - 1];
 }
 
 static

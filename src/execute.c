@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
+#include <limits.h>
 
 #include "parse.h"
 #include "symtable.h"
@@ -42,7 +43,7 @@ struct table *create_table(db* db, char* name, size_t max_cols) {
 }
 
 static
-struct column *create_column(table *table, char* name, bool sorted) {
+struct column *create_column(table *table, char *name, bool sorted) {
     struct column c = { .name = name, .index = NULL, .table = table, .clustered = false };
     vector_init(&c.data, 16);
     assert(c.data.vals);
@@ -56,6 +57,7 @@ struct column *create_column(table *table, char* name, bool sorted) {
 
 static
 void create_index(struct column *col, enum index_type type) {
+    // TODO: case where col->index->index == NULL: load after create cmd
     switch(type) {
         case SORTED:
             col->index = malloc(sizeof *col->index);
@@ -199,6 +201,43 @@ void align_column(struct column *col, int *row, int n) {
     free(indices);
 }
 
+static
+void align_col(struct column *col, int *indices, int n) {
+    int *a = col->data.vals;
+    int i, j, m;
+
+    // permute a and store in indices
+    // store inverse permutation in a
+     for (j = 0; j < n; ++j) {
+         i = indices[j];
+         indices[j] = a[i];
+         a[i] = j;
+     }
+
+     // swap a and indices
+     for (j = 0; j < n; ++j) {
+         i = indices[j];
+         indices[j] = a[j];
+         a[j] = i;
+     }
+
+     // inverse indices permutation to get the original
+     for (i = 0; i < n; ++i)
+         indices[i] = -indices[i] - 1;
+
+     for (m = n - 1; m >= 0; --m) {
+         // for (i = m, j = indices[m]; j >= 0; i = j, j = indices[j]) ;
+         i = m;
+         j = indices[m];
+         while (j >= 0) {
+             i = j;
+             j = indices[j];
+         }
+         indices[i] = indices[-j - 1];
+         indices[-j - 1] = m;
+    }
+}
+
 static inline
 void bulk_rel_insert(struct table *tbl, int *row) {
     for (unsigned j = 0; j < tbl->col_count; j++)
@@ -210,6 +249,7 @@ static
 void mk_cluster(struct table *tbl) {
     int *alignment = sort_clustered(&tbl->col[tbl->clustered]);
 
+    (void)align_col;
     for (size_t j = 0; j < tbl->clustered; j++)
         align_column(&tbl->col[j], alignment, tbl->length);
 
@@ -381,6 +421,10 @@ struct status vec_scan(int low, int high, struct cvec *pos, struct cvec *vals, s
 static status col_fetch(struct column *col, struct cvec *v, struct cvec **r) {
     status st;
 
+    for (size_t i = 0; i < v->num_tuples; i++) {
+        cs165_log(stderr, "sindex_scan: vec[%d] = %d\n", i, v->values[i]);
+    }
+
     int *resv = malloc(sizeof(int) * v->num_tuples);
     assert(resv);
     for (size_t j = 0; j < v->num_tuples; j++)
@@ -388,6 +432,7 @@ static status col_fetch(struct column *col, struct cvec *v, struct cvec **r) {
 
     struct cvec *ret = malloc(sizeof(struct cvec));
     cs165_log(stdout, "num_tuples in fetch: %d\n", v->num_tuples);
+
     ret->num_tuples = v->num_tuples;
     ret->values = resv;
     ret->type = VECTOR;
@@ -404,116 +449,121 @@ struct status reconstruct(struct cvec *vecs, struct cvec **r) {
 }
 
 static
-struct cvec *find_min(int *vals, size_t sz, bool sorted) {
-    struct cvec *min = malloc(sizeof(struct cvec));
-    assert(min);
-
-    int m = vals[0];
-    if (!sorted)
-        for (size_t j = 1; j < sz; j++)
-            m = (vals[j] < m) ? vals[j] : m;
-
-    min->ival = m;
-    min->num_tuples = 1;
-    min->type = INT_VAL;
-    return min;
-}
-
-static
-struct cvec *find_max(int *vals, size_t sz, bool sorted) {
-    struct cvec *max = malloc(sizeof(struct cvec));
-    assert(max);
-
-    int m = vals[sz-1];
+int find_max(int *vals, size_t sz, bool sorted) {
+    int max = vals[sz-1];
     if (!sorted)
         for (size_t j = 0; j < sz-1; j++)
-            m = (vals[j] > m) ? vals[j] : m;
-
-    max->ival = m;
-    max->num_tuples = 1;
-    max->type = INT_VAL;
+            max = (vals[j] > max) ? vals[j] : max;
     return max;
 }
 
 static
-struct cvec *find_avg(int *vals, size_t sz) {
-    struct cvec *avg = malloc(sizeof(struct cvec));
-    assert(avg);
-
-    long int sum = 0;
-    for (size_t j = 0; j < sz; j++) sum += (long int) vals[j];
-    avg->dval = (long double) sum / sz;
-
-    fprintf(stderr, "avg = %Lf\n", avg->dval);
-    //cs165_log(stderr, "average = %Lf\n", avg->dval);
-    avg->num_tuples = 1;
-    avg->type = DOUBLE_VAL;
-    return avg;
-}
-
-static
-struct cvec *aggregate_max(struct column *c) {
+int aggregate_max(struct column *c) {
     if (c->clustered)
         return find_max(c->data.vals, c->data.sz, true);
 
-    /*
-    if (c->index) {
+    if (c->index)
         switch (c->index->type) {
             // TODO change to sindex fmin
-            case SORTED: return NULL;
+            case SORTED: break;
             // TODO change to btree function
-            case BTREE: return NULL;
+            case BTREE: break;
             case IDX_INVALID: assert(false);
         }
-    }
-    */
+
     return find_max(c->data.vals, c->data.sz, false);
 }
 
 static
-struct cvec *aggregate_min(struct column *c) {
+long double find_avg(int *vals, size_t sz) {
+    long double avg = 0.0;
+
+    long int sum = 0;
+    for (size_t j = 0; j < sz; j++)
+        sum += (long int) vals[j];
+
+    avg = (long double) sum / sz;
+
+    fprintf(stderr, "avg = %Lf\n", avg);
+    //cs165_log(stderr, "average = %Lf\n", avg->dval);
+    return avg;
+}
+
+static
+int find_min(int *vals, size_t sz, bool sorted) {
+    int min = vals[0];
+    if (!sorted)
+        for (size_t j = 1; j < sz; j++)
+            min = (vals[j] < min) ? vals[j] : min;
+    return min;
+}
+
+static
+int aggregate_min(struct column *c) {
     if (c->clustered)
         return find_min(c->data.vals, c->data.sz, true);
 
-    /*
     if (c->index) {
         switch (c->index->type) {
             // TODO change to sindex fmin
-            case SORTED: return NULL;
+            case SORTED: break;
             // TODO change to btree function
-            case BTREE: return NULL;
+            case BTREE: break;
             case IDX_INVALID: assert(false);
         }
     }
-    */
+
     return find_min(c->data.vals, c->data.sz, false);
 }
 
 static
 struct status aggregate_col(struct column *c, enum aggr agg, struct cvec **r) {
     status st;
+
+    struct cvec *val = malloc(sizeof(struct cvec));
+    assert(val);
+    val->num_tuples = 1;
+
     switch(agg) {
-        case MIN: *r = aggregate_min(c); break;
-        case MAX: *r = aggregate_max(c); break;
-        case AVG: *r = find_avg(c->data.vals, c->data.sz); break;
+        case MIN:
+            val->ival = aggregate_min(c);
+            val->type = INT_VAL;
+            break;
+        case MAX: val->ival =
+            aggregate_max(c);
+            val->type = INT_VAL;
+            break;
+        case AVG: val->ival =
+            find_avg(c->data.vals, c->data.sz);
+            val->type = DOUBLE_VAL;
+            break;
     }
+
+    *r = val;
     return st;
 }
 
 static
 struct status aggregate_res(struct cvec *vals, enum aggr agg, struct cvec **r) {
     status st;
+
+    struct cvec *val = malloc(sizeof(struct cvec));
+    assert(val);
+    val->num_tuples = 1;
+    val->type = INT_VAL;
+
     switch(agg) {
         case MIN:
-            *r = find_min(vals->values, vals->num_tuples, false);
+            val->ival = find_min(vals->values, vals->num_tuples, false);
             break;
         case MAX:
-            *r = find_max(vals->values, vals->num_tuples, false);
+            val->ival = find_max(vals->values, vals->num_tuples, false);
             break;
         case AVG:
-            *r = find_avg(vals->values, vals->num_tuples);
+            val->dval = find_avg(vals->values, vals->num_tuples);
             break;
     }
+    *r = val;
     return st;
 }
 
@@ -574,6 +624,7 @@ struct status execute_db_operator(db_operator *query, struct cvec **r) {
             break;
         case(INSERT):
             st = rel_insert(query->tables, query->value1);
+            free(query->value1);
             insert = false;
             break;
         case(TUPLE):

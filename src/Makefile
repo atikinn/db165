@@ -62,6 +62,9 @@ clean:
 	rm -f client server *.o *~ *.bak core *.core cs165_unix_socket tags
 	rm -rf .deps *.dSYM
 
+dbclean:
+	rm -rf ./db
+
 distclean: clean
 	rm -rf $(DEPSDIR)
 

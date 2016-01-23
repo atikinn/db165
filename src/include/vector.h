@@ -7,6 +7,7 @@ struct vec {
     int *vals;
 };
 
+extern void vector_free(struct vec *v);
 extern bool vector_init(struct vec *v, size_t capacity);
 extern bool vector_resize(struct vec *v);
 extern size_t vector_push(struct vec *v, int item);

@@ -52,7 +52,6 @@ static db_operator *cmd_create_db(const char *db_name) {
     dbo->create_name = trim_quotes_copy(db_name);
     dbo->type = CREATE;
     dbo->create_type = CREATE_DB;
-    //dbo->vecs_size = 0;
     return dbo;
 }
 
@@ -67,7 +66,6 @@ static db_operator *cmd_create_tbl(const char *tbl_name, const char *db_name, si
     char varbuf[VARNAME_SIZE];
     snprintf(varbuf, sizeof varbuf, "%s.%s", db_name, dbo->create_name);
     dbo->assign_var = strdup(varbuf);
-    //dbo->vecs_size = 0;
     return dbo;
 }
 

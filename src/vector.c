@@ -8,6 +8,10 @@
 
 #define DEFAULT_CAPACITY 8
 
+void vector_free(struct vec *v) {
+    free(v->vals);
+}
+
 bool vector_init(struct vec *v, size_t capacity) {
     v->sz = 0;
     v->capacity = (capacity < DEFAULT_CAPACITY) ? DEFAULT_CAPACITY : capacity;

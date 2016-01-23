@@ -168,6 +168,12 @@ void handle_client(int client_socket) {
             }
 
             // 4. Send response of request
+            if (result != NULL) {
+                for (size_t i = 0; i < result->num_tuples; i++) {
+                    cs165_log(stderr, "resv[%d] = %d\n", i, result->values[i]);
+                }
+            }
+
             if (send_message.status == OK_WAIT_FOR_RESPONSE &&
                 send(client_socket, resp_payload, send_message.length, 0) == -1) {
                     log_err("Failed to send message.");

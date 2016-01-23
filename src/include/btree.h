@@ -9,6 +9,8 @@ struct btree {
     bool leading;
 };
 
+extern int btree_max(struct btree *bt);
+extern void btree_free(struct btree *bt);
 extern struct btree *btree_create(bool clustered);
 extern bool btree_init(struct btree *bt, bool clustered);
 extern void btree_load(struct btree *bt, struct vec *v);
