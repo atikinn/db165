@@ -196,24 +196,37 @@ db_operator *cmd_fetch(size_t argc, const char **argv) {
     (void)argc;
     db_operator *dbo = malloc(sizeof *dbo);
     if (dbo == NULL) return NULL;
-    dbo->columns = map_get(argv[0]);
+    switch(map_gettype(argv[0])) {
+        case ENTITY:
+            dbo->columns = map_get(argv[0]);
+            dbo->type = PROJECT;
+            break;
+        case RESULT:
+            dbo->vals1 = map_get(argv[0]);
+            dbo->type = PROJECT_RES;
+            break;
+        case INVALID_VARTYPE: assert(false);
+    }
     dbo->pos1 = map_get(argv[1]);
     dbo->assign_var = strdup(argv[2]);
-    dbo->type = PROJECT;
-    //dbo->vecs_size = 0;
     return dbo;
 }
 
-/* TODO: 1. doesn't accept more that one argument; 2. can't tuple a column -
- * need a separate tuple for that */
+/* TODO: 2. can't tuple a column - need a separate tuple for that */
 db_operator *cmd_tuple(size_t argc, const char **argv) {
     (void)argc;
     db_operator *dbo = malloc(sizeof *dbo);
     if (dbo == NULL) return NULL;
-    dbo->vals1 = map_get(argv[0]);
+    dbo->vals1 = malloc(argc * sizeof *(dbo->vals1));
+    assert(dbo->vals1);
+    for (size_t j = 0; j < argc; j++) {
+        struct cvec *res = map_get(argv[j]);
+        assert(res->type == RESULT);
+        dbo->vals1[j] = *res;
+    }
     dbo->type = TUPLE;
+    dbo->tuple_count = argc;
     dbo->msgtype = dbo->vals1->type;
-    //dbo->vecs_size = dbo->vals->num_tuples;
     return dbo;
 }
 
@@ -320,25 +333,22 @@ db_operator *cmd_sub(size_t argc, const char **argv) {
     return dbo;
 }
 
-//////////////////////////////////////////////////////////////////////////////
-
 db_operator *cmd_join(size_t argc, const char **argv) {
-    (void)argc;
-    (void)argv;
-    return NULL;
+    (void) argc;
+    db_operator *dbo = malloc(sizeof *dbo);
+    if (dbo == NULL) return NULL;
+
+    dbo->vals1 = map_get(argv[0]);
+    dbo->pos1 = map_get(argv[1]);
+    dbo->vals2 = map_get(argv[2]);
+    dbo->pos2 = map_get(argv[3]);
+    dbo->assign_var = strdup(argv[4]);
+    dbo->assign_var2 = strdup(argv[5]);
+    dbo->type = JOIN;
+    return dbo;
 }
 
-db_operator *cmd_mergejoin(size_t argc, const char **argv) {
-    (void)argc;
-    (void)argv;
-    return NULL;
-}
-
-db_operator *cmd_hashjoin(size_t argc, const char **argv) {
-    (void)argc;
-    (void)argv;
-    return NULL;
-}
+//////////////////////////////////////////////////////////////////////////////
 
 db_operator *cmd_rel_delete(size_t argc, const char **argv) {
     (void)argc;
@@ -351,3 +361,10 @@ db_operator *cmd_update(size_t argc, const char **argv) {
     (void)argv;
     return NULL;
 }
+
+db_operator *cmd_mergejoin(size_t argc, const char **argv) {
+    (void)argc;
+    (void)argv;
+    return NULL;
+}
+

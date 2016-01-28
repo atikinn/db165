@@ -20,10 +20,9 @@ static struct {
     { "avg", cmd_avg },
     { "create", cmd_create },   // no response
     { "fetch", cmd_fetch },
-    { "hashjoin", cmd_hashjoin },
+    { "hashjoin", cmd_join },
     //{ "load", cmd_load },       // no response
     { "max", cmd_max },
-    { "mergejoin", cmd_mergejoin },
     { "min", cmd_min },
     { "relational_delete", cmd_rel_delete },    // no response
     { "relational_insert", cmd_rel_insert },    // no response

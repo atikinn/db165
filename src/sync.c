@@ -153,19 +153,21 @@ void persist_index(struct column *col, const char *tname) {
 	    cs165_log(stderr, "%s: %s\n", tname, path);
 	    persist_data(col->index->index, col->data.sz, sizeof (struct sindex), path);
 	    if (path != buf) free(path);
-	case BTREE: break; //TODO
+	case BTREE: break; // TODO: extremely expensive, easier to fully reconstruct
 	case IDX_INVALID: break;
     }
 }
 
 static inline
 void persist_col(struct column *col, const char *tname) {
+    if (col->status == ONDISK || col->status == INMEMORY) return;
+
     char buf[PATHLEN];
     char *path = vbsnprintf(buf, sizeof buf, "%s/%s.%s.bin", DBPATH, tname, col->name);
     cs165_log(stderr, "%s: %s\n", tname, path);
     persist_data(col->data.vals, col->data.sz, sizeof (int), path);
-    if (path != buf) free(path);
-    return;
+    if (path != buf)
+	free(path);
 }
 
 static inline
@@ -342,8 +344,8 @@ static
 struct column restore_col(char *record, struct table *tbl) {
     struct col_record *rec = (struct col_record *) record;
     bool clustered = tbl->clustered == tbl->col_count;
-    struct column col = { .name = strdup(rec->name), .table = tbl,
-			  .index = NULL, .clustered = clustered };
+    struct column col = { .name = strdup(rec->name), .table = tbl, .index = NULL,
+			  .clustered = clustered, .status = ONDISK };
     cs165_log(stderr, "clustered = %d\n", col.clustered);
     enum index_type idx_type = rec->idx_type - '0';
     switch(idx_type) {
@@ -471,10 +473,23 @@ void restore_col_data(struct column *col) {
     memcpy(col->data.vals, data, sz);
     col->data.sz = sz / sizeof (int);
     col->data.capacity = col->data.sz;
+    col->status = INMEMORY;
     cs165_log(stdout, "col capacity %d, %d\n", col->data.sz, col->data.vals[col->data.sz-1]);
     fileunmap(data, sz);
 }
 
+void load_column(struct column *col) {
+    restore_col_data(col);
+    if (col->index) {
+	switch(col->index->type) {
+	    case SORTED: restore_sindex(col); break;
+	    case BTREE: restore_btree(col); break;
+	    case IDX_INVALID: assert(false);
+	}
+    }
+}
+
+/* eager loading: isn't used at the moment */
 static
 void restore_data(struct db *db) {
     for (size_t j = 0; j < db->table_count; j++) {
@@ -499,7 +514,8 @@ void restore_database(void) {
     if (stat(DBPATH, &st) == 0) {
 	struct db *db = restore_meta();
 	db_set_current(db);
-	restore_data(db);
+	(void)restore_data;	// Can be used to restore eagerly
+	//restore_data(db);
 	struct table *tbl = &db->tables[0];
 	for (size_t j = 0; j < tbl->col_count; j++)
 	    fprintf(stderr, "%d ", tbl->col[j].data.vals[tbl->length-1]);

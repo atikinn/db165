@@ -299,6 +299,30 @@ void insert_id(union value *x, int id, bool idref) {
     x->ids = v;
 }
 
+void btree_increment_cond(struct btnode *first, int k, int id) {
+    while (first != NULL) {
+	for (int j = 0; j < first->ksz; j++) {
+	    int key = first->keys[j];
+	    if (bset_isset(first->idref, j)) {
+		struct vec *v = first->values[j].ids;
+		for (size_t i = 0; i < v->sz; i++) {
+		    if (v->vals[i] < id) continue;
+		    if (v->vals[i] > id) {
+			v->vals[i]++;
+			continue;
+		    }
+		    v->vals[i] += (key != k) ? 1 : 0;
+		}
+	    } else {
+		if (first->values[j].id >= id && key != k)
+		    first->values[j].id++;
+	    }
+	}
+
+	first = first->values[FANOUT-1].child;
+    }
+}
+
 static inline
 void increment_helper(struct btnode *leaf, int idx) {
     for (int j = idx; j < leaf->ksz; j++) {
@@ -336,7 +360,9 @@ void leaf_insert(struct btnode *x, int k, int id, bool leading) {
 	insert_id(&x->values[kidx], id, idref);
 	if (!idref) bset_set(x->idref, kidx);
     }
-    if (leading) increment_ids(x, kidx + 1);
+
+    if (leading)
+	increment_ids(x, kidx + 1);
 }
 
 static inline

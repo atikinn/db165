@@ -66,13 +66,13 @@ int prepare_response(struct cvec *result, void **payload) {
     int length = 0;
     if (result != NULL /* && st.code == OK */) {
         switch(result->type) {
-            case INT_VAL:
+            case LONG_VAL:
                 *payload = &result->ival;
-                length = result->num_tuples * sizeof(int);
+                length = sizeof(long int);
                 break;
             case DOUBLE_VAL:
                 *payload = &result->dval;
-                length = result->num_tuples * sizeof(double long);
+                length = sizeof(double long);
                 break;
             case VECTOR:
                 *payload = result->values;
@@ -168,12 +168,6 @@ void handle_client(int client_socket) {
             }
 
             // 4. Send response of request
-            if (result != NULL) {
-                for (size_t i = 0; i < result->num_tuples; i++) {
-                    cs165_log(stderr, "resv[%d] = %d\n", i, result->values[i]);
-                }
-            }
-
             if (send_message.status == OK_WAIT_FOR_RESPONSE &&
                 send(client_socket, resp_payload, send_message.length, 0) == -1) {
                     log_err("Failed to send message.");

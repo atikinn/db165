@@ -67,6 +67,8 @@ typedef struct column_index {
     void *index;
 } column_index;
 
+enum col_status { ONDISK, INMEMORY, MODIFIED };
+
 /**
  * column
  * Defines a column structure, which is the building block of our column-store.
@@ -87,6 +89,7 @@ struct column {
     char *name;
     struct table *table;
     bool clustered;
+    enum col_status status;
     column_index *index;
     struct vec data;
 };
@@ -144,7 +147,7 @@ struct status {
 
 typedef struct cvec cvec;
 
-enum result_type { VECTOR, LONG_VECTOR, DOUBLE_VAL, INT_VAL };
+enum result_type { VECTOR, LONG_VECTOR, DOUBLE_VAL, LONG_VAL };
 
 struct cvec {
     enum result_type type;
@@ -152,8 +155,8 @@ struct cvec {
     union {
       long int *long_values;
       int *values;
+      long int ival;
       long double dval;
-      int ival;
     };
 };
 
@@ -175,6 +178,7 @@ typedef enum OperatorType {
     SELECT = 1,
     SELECT2,
     PROJECT,
+    PROJECT_RES,
     HASH_JOIN,
     MERGE_JOIN,
     INSERT,
@@ -229,6 +233,7 @@ typedef struct db_operator {
     column *columns;            // for SELECT, PROJECT,
 
     char *assign_var;           // var name for symtable; almost every operator
+    char *assign_var2;          // var name for symtable; joins
 
     enum create create_type;    // CREATE types only
     char *create_name;          // strduped name for CREATE types
@@ -249,7 +254,10 @@ typedef struct db_operator {
     struct cvec *vals1;       // result of PROJECT for SELECT2, TUPLE, ADD, SUB
     struct cvec *vals2;       // second result for ADD/SUB
 
+    size_t tuple_count;         // number of columns for tuple to output
+
     int *value1;                // For INSERT/delete operations, we only use value1;
+    // TODO - free(?)
     int *value2;                // For UPDATE operations, we update value1 -> value2;
 
     enum result_type msgtype;

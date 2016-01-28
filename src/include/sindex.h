@@ -4,20 +4,13 @@
 #include "vector.h"
 
 /*
-struct sidx {
+struct sindex {
     size_t sz;
     size_t capacity;
-    struct ssindex *vals;
-}
-
-struct ssindex {
-    int val;
-    union {
-        unsigned rid;
-        struct vec *rids;
-    }
-}
+    struct element *vals;
+};
 */
+
 struct sindex {
     int val;
     unsigned pos;

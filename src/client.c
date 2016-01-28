@@ -18,6 +18,7 @@
 #include <stdbool.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <assert.h>
 
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -30,22 +31,6 @@
 #include "utils.h"
 
 #define DEFAULT_STDIN_BUFFER_SIZE 1024
-void get_all_buf(int sock, char *output) {
-    (void) output;
-    char buffer[1024];
-
-    int n;
-    while((errno = 0, (n = recv(sock, buffer, sizeof(buffer), 0)) > 0)
-            || errno == EINTR) {
-        if(n > 0)
-            ;
-            //output.append(buffer, n);
-    }
-
-    if(n < 0) {
-        /* handle error - for example throw an exception*/
-    }
-}
 
 char *itoa (int value, char *result, int base) {
     // check that the base if valid
@@ -103,7 +88,9 @@ int connect_client() {
 }
 
 void send_file(int client_socket, message *send_message) {
+    assert(send_message->status = STRDATA);
     char *openq = strchr(send_message->payload, '"');
+
     char *closeq = strchr(openq + 1, '"');
     int flen = closeq - openq;
     char filename[flen];
@@ -170,6 +157,7 @@ void send_file(int client_socket, message *send_message) {
     }
 
     munmap(send_message->payload, send_message->length);
+    log_info("\tunmapped");
 }
 
 void send_command(int client_socket, message *send_message) {
@@ -210,12 +198,12 @@ void send_command(int client_socket, message *send_message) {
                         long double *vals = (double long *)payload;
                         for (size_t i = 0; i < num_bytes / sizeof(long double); i++)
                             fprintf(stderr, "%Lf\n", vals[i]);
-                    } else if (recv_message.payload_type == VECTOR ||
-                               recv_message.payload_type == INT_VAL) {
+                    } else if (recv_message.payload_type == VECTOR) {
                         int *vals = (int *)payload;
                         for (size_t i = 0; i < num_bytes / sizeof(int); i++)
                             fprintf(stderr, "%d\n", vals[i]);
-                    } else if (recv_message.payload_type == LONG_VECTOR) {
+                    } else if (recv_message.payload_type == LONG_VECTOR ||
+                               recv_message.payload_type == LONG_VAL) {
                         long int *vals = (long int *)payload;
                         for (size_t i = 0; i < num_bytes / sizeof(long int); i++)
                             fprintf(stderr, "%ld\n", vals[i]);
@@ -244,7 +232,7 @@ int main(void) {
         exit(1);
     }
 
-    message send_message;
+    message send_message = { 0, 0, 0, 0 };
 
     // Always output an interactive marker at the start of each command if the
     // input is from stdin. Do not output if piped in from file or from other fd
@@ -271,11 +259,12 @@ int main(void) {
         log_info("%s", output_str);
         if (strncmp(read_buffer, load, strlen(load)) == 0) {
             send_message.status = STRDATA;
+            send_message.payload = read_buffer;
             send_file(client_socket, &send_message);
         } else {
+            send_message.status = COMMAND;
             send_message.payload = read_buffer;
             send_message.length = strlen(read_buffer);
-            send_message.status = COMMAND;
             send_command(client_socket, &send_message);
         }
     }
