@@ -419,15 +419,15 @@ size_t scan_unsorted(int **v, int low, int high, size_t sz, int *vals) {
 
 static inline
 size_t search_until(int *vals, size_t sz, int start_idx, int value, bool up) {
-    int j;
+    size_t j;
     if (up == true) {
         for (j = start_idx; j < sz; j++)
             if (vals[j] != value) break;
         return j - 1;
     } else {
-        for (j = start_idx; j >= 0; j--)
+        for (j = start_idx; j > 0; j--)
             if (vals[j] != value) break;
-        return j + 1;
+        return (vals[0] == value) ? 0 : j + 1;
     }
 }
 
@@ -1079,11 +1079,10 @@ struct status execute_db_operator(db_operator *query, struct cvec ***result) {
             st = simple_hash_join(query->vals1, query->pos1, query->vals2, query->pos2, &r, &r2);
             (void)nl_join;
             break;
+        case(DELETE): break;
         case(UPDATE):
             st = update_col(query->select, query->columns, query->pos1);
             break;
-        case(HASH_JOIN): break;
-        case(DELETE): break;
 
         case(MERGE_JOIN): break;
         default: break;

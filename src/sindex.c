@@ -163,15 +163,15 @@ int sindex_index_of(struct sindex *a, int key, int sz) {
 
 static inline
 int sindex_search_until(struct sindex *vals, size_t sz, int start_idx, int value, bool up) {
-    int j;
+    size_t j;
     if (up == true) {
         for (j = start_idx; j < sz; j++)
             if (vals[j].val != value) break;
         return j - 1;
     } else {
-        for (j = start_idx; j >= 0; j--)
+        for (j = start_idx; j > 0; j--)
             if (vals[j].val != value) break;
-        return j + 1;
+        return (vals[0].val == value) ? 0 : j + 1;
     }
 }
 

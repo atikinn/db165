@@ -9,10 +9,10 @@ all: client server tags
 CC = gcc -std=c11
 
 # Default optimization level
-O ?= 0	#3
+O ?= 03	#3
 
 # Flags and other libraries
-override CFLAGS += -Wall -Wextra -pedantic -g -ggdb3 -D_FORTIFY_SOURCE -DLOG -DLOG_ERROR \
+override CFLAGS += -Wall -Wextra -g -ggdb3 -D_FORTIFY_SOURCE -DLOG -DLOG_ERROR \
 		-DLOG_INFO -pthread -O$(O) -I$(INCLUDES) -D _GNU_SOURCE
 LDFLAGS =
 LIBS =
@@ -137,13 +137,13 @@ test21:
 	  ./client < ../project_tests/test21.dsl
 
 test22:
-	  ./client < ../project_tests/test22.dsl
+	  ./client < ../project_tests/test22q.dsl
 
 test23:
-	  ./client < ../project_tests/test23.dsl
+	  ./client < ../project_tests/test23q.dsl
 
 test24:
-	  ./client < ../project_tests/test24.dsl
+	  ./client < ../project_tests/test24q.dsl
 
 test25:
 	  ./client < ../project_tests/test25.dsl
