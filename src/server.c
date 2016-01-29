@@ -71,6 +71,7 @@ int prepare_response(struct cvec *result, void **payload) {
                 length = sizeof(long int);
                 break;
             case DOUBLE_VAL:
+                log_info("response: vector %Lf\n", result->dval);
                 *payload = &result->dval;
                 length = sizeof(double long);
                 break;
@@ -87,6 +88,23 @@ int prepare_response(struct cvec *result, void **payload) {
     return length;
 }
 
+int sendall(int s, char *buf, int *len) {
+    int total = 0;        // how many bytes we've sent
+    int bytesleft = *len; // how many we have left to send
+    int n;
+
+    while(total < *len) {
+        n = send(s, buf+total, bytesleft, 0);
+        if (n == -1) { break; }
+        total += n;
+        bytesleft -= n;
+    }
+
+    *len = total; // return number actually sent here
+
+    return n == -1 ? -1 : 0; // return -1 on failure, 0 on success
+}
+
 /**
  * handle_client(client_socket)
  * This is the execution routine after a client has connected.
@@ -99,7 +117,7 @@ void handle_client(int client_socket) {
     log_info("Connected to socket: %d.\n", client_socket);
 
     // Create two messages, one from which to read and one from which to receive
-    message send_message = {0, 0, 0, 0};
+    message send_message = {0, 0, 0, 0, 0};
     message recv_message;
 
     // Continually receive messages from client and execute queries.
@@ -147,17 +165,20 @@ void handle_client(int client_socket) {
             db_operator *query = parse_command(&recv_message, &send_message);
 
             // 2. Handle request
-            struct cvec *result = NULL;
+            struct cvec **result = NULL;
             struct status st = execute_db_operator(query, &result);
-            (void)st;
             // TODO, check for ERROR status_code
+            (void)st;
 
             // free file buf after loading
             if (buf != NULL) free(buf);
 
             // prepare the response
             void *resp_payload = NULL;
-            send_message.length = prepare_response(result, &resp_payload);
+            if (result == NULL)
+                send_message.length = 0;
+            else
+                send_message.length = send_message.count * prepare_response(result[0], &resp_payload);
 
             log_info("status %d of len %d\n", send_message.status, send_message.length);
 
@@ -168,11 +189,18 @@ void handle_client(int client_socket) {
             }
 
             // 4. Send response of request
-            if (send_message.status == OK_WAIT_FOR_RESPONSE &&
-                send(client_socket, resp_payload, send_message.length, 0) == -1) {
-                    log_err("Failed to send message.");
-                    exit(1);
+            if (send_message.status == OK_WAIT_FOR_RESPONSE && send_message.length > 0) {
+                for (int j = 0; j < send_message.count; j++) {
+                    int len = prepare_response(result[j], &resp_payload);
+                    ssize_t sent = sendall(client_socket, resp_payload, &len);
+                    log_info("server sent %d status = %d\n", len, sent);
+                    if (sent == -1) {
+                        log_err("Failed to send message.");
+                        exit(1);
+                    }
                 }
+            }
+            free(result);
         }
     } while (!done);
 

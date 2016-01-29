@@ -21,6 +21,7 @@ extern int sindex_val_cmp(const void *a, const void *b);
 extern struct sindex *sindex_create(struct vec *data);
 extern struct sindex *sindex_insert(struct sindex *idx, unsigned pos, int val, size_t sz);
 extern size_t sindex_scan(int **v, int low, int high, size_t sz, struct sindex *idx);
+extern size_t sindex_find(int **v, int value, size_t sz, struct sindex *idx);
 extern struct sindex *sindex_alloc(size_t data_sz);
 extern bool is_sorted(struct sindex *idx, size_t sz);
 

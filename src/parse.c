@@ -144,8 +144,10 @@ db_operator *parse_command(message *recv_message, message *send_message) {
     if (dbo->type == TUPLE) {
         send_message->status = OK_WAIT_FOR_RESPONSE;
         send_message->payload_type = dbo->msgtype;
+        send_message->count = dbo->tuple_count;
     } else {
         send_message->status = OK_DONE;
+        send_message->count = 0;
     }
 
     return dbo;

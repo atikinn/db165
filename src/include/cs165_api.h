@@ -177,6 +177,7 @@ typedef enum create {
 typedef enum OperatorType {
     SELECT = 1,
     SELECT2,
+    POINT_SELECT,
     PROJECT,
     PROJECT_RES,
     HASH_JOIN,
@@ -229,6 +230,7 @@ typedef enum OperatorType {
 typedef struct db_operator {
     OperatorType type;          // Flag to choose operator
     db *db;                     // current db
+
     table *tables;
     column *columns;            // for SELECT, PROJECT,
 
@@ -245,20 +247,20 @@ typedef struct db_operator {
     enum aggr agg;              // AGGREAGTE type
 
     struct {
-      size_t low;
-      size_t high;
+      int low;
+      int high;
     } range;                    // for SELECT/SELECT2
 
     struct cvec *pos1;        // result of SELECT for SELECT2/PROJECT
     struct cvec *pos2;        // result of SELECT for SELECT2/PROJECT
-    struct cvec *vals1;       // result of PROJECT for SELECT2, TUPLE, ADD, SUB
+    struct cvec *vals1;       // result of PROJECT for SELECT2, ADD, SUB
     struct cvec *vals2;       // second result for ADD/SUB
 
+    struct cvec **tuple;
     size_t tuple_count;         // number of columns for tuple to output
 
-    int *value1;                // For INSERT/delete operations, we only use value1;
-    // TODO - free(?)
-    int *value2;                // For UPDATE operations, we update value1 -> value2;
+    int *value1;                // For RELINSERT
+    int select;                 // POINT_SELECT, UPDATE, DELETE
 
     enum result_type msgtype;
     //size_t vecs_size;           // num of cvecs for TUPLE TODO

@@ -22,6 +22,12 @@
 #define DEFAULT_TABLE_COUNT 8
 
 #define L1CACHE_SIZE (2<<17)
+#define NUMBUCKETS 997
+
+struct bucket {
+    struct sindex *items;
+    int length;
+};
 
 static
 struct db *create_db(char *db_name) {
@@ -49,7 +55,7 @@ struct table *create_table(db* db, char* name, size_t max_cols) {
 static
 struct column *create_column(table *table, char *name, bool sorted) {
     struct column c = { .name = name, .index = NULL, .table = table,
-                        .clustered = false, .status = MODIFIED };
+                        .clustered = false, .status = INMEMORY };
     vector_init(&c.data, 16);
     assert(c.data.vals);
     if (sorted) {
@@ -173,6 +179,20 @@ status rel_insert(struct table *tbl, int *row) {
 
     st.code = OK;
     st.message = "insert completed";
+    return st;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+static
+struct status update_col(int value, struct column *col, struct cvec *pos) {
+    status st;
+    int *data = col->data.vals;
+    int *indixes = pos->values;
+
+    for (size_t j = 0; j < pos->num_tuples; j++)
+        data[indixes[j]] = value;
+
     return st;
 }
 
@@ -304,6 +324,9 @@ struct status bulk_load(struct table *tbl, char *rawdata) {
 
     if (tbl->clustered < tbl->col_count) mk_cluster(tbl);
 
+    for (size_t j = 0; j < tbl->col_count; j++)
+        tbl->col[j].status = MODIFIED;
+
     //cs165_log(stderr, "bulk load complete, %d\n", tbl->length);
     return st;
 }
@@ -351,6 +374,19 @@ int index_of_right(int *a, int right_range, int length) {
     return low - 1;
 }
 
+static
+int indexOf(int *a, int key, int sz) {
+    int lo = 0;
+    int hi = sz;
+    while (lo <= hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if      (key < a[mid]) hi = mid - 1;
+        else if (key > a[mid]) lo = mid + 1;
+        else return mid;
+    }
+    return -1;
+}
+
 static inline
 size_t scan_clustered(int **v, int low, int high, size_t sz, int *vals) {
     int low_idx = index_of_left(vals, low, sz);
@@ -379,6 +415,91 @@ size_t scan_unsorted(int **v, int low, int high, size_t sz, int *vals) {
     cs165_log(stderr, "scan_unsorted: %zu\n", num_tuples);
     *v = realloc(vec, sizeof(int) * num_tuples);
     return num_tuples;
+}
+
+static inline
+size_t search_until(int *vals, size_t sz, int start_idx, int value, bool up) {
+    int j;
+    if (up == true) {
+        for (j = start_idx; j < sz; j++)
+            if (vals[j] != value) break;
+        return j - 1;
+    } else {
+        for (j = start_idx; j >= 0; j--)
+            if (vals[j] != value) break;
+        return j + 1;
+    }
+}
+
+static inline
+size_t select_clustered(int **v, int value, size_t sz, int *vals) {
+    int idx = indexOf(vals, value, sz);
+
+    if (idx == -1) {
+        *v = NULL;
+        return 0;
+    }
+
+    int low_idx = search_until(vals, sz, idx, value, false);
+    int high_idx = search_until(vals, sz, idx, value, true);
+    size_t num_tuples = high_idx - low_idx + 1;
+
+    cs165_log(stderr, "select_clustered: %zu %zu %zu\n", low_idx, high_idx, num_tuples);
+    int *vec = malloc(num_tuples * sizeof *vec);
+    for (size_t j = 0; j < num_tuples; j++)
+        vec[j] = low_idx + j;
+    *v = vec;
+
+    return num_tuples;
+}
+
+static inline
+size_t select_unsorted(int **v, int value, size_t sz, int *vals) {
+    size_t num_tuples = 0;
+    int *vec = malloc(sizeof(int) * sz);
+    for (size_t j = 0; j < sz; j++) {
+        vec[num_tuples] = j;
+        num_tuples += (vals[j] == value);
+    }
+    cs165_log(stderr, "select_unsorted: %zu\n", num_tuples);
+    *v = realloc(vec, sizeof(int) * num_tuples);
+    return num_tuples;
+}
+
+static
+struct status select_col(int value, struct column *col, struct cvec **r) {
+    status st;
+    struct vec const *data = &col->data;
+    struct vec *btree_result = NULL;
+    size_t num_tuples = 0;
+    int *vec = NULL;
+    if (col->index) {
+        switch (col->index->type) {
+            case SORTED:
+                num_tuples = sindex_find(&vec, value, data->sz, col->index->index);
+                break;
+            case BTREE:
+                btree_result = btree_search(col->index->index, value);
+                num_tuples = btree_result->sz;
+                vec = btree_result->vals;
+                cs165_log(stderr, "btree_scan: %zu\n", num_tuples);
+                break;
+            case IDX_INVALID: assert(false);
+        }
+    } else if (col->clustered) {
+        num_tuples = select_clustered(&vec, value, data->sz, data->vals);
+    } else {
+        num_tuples = select_unsorted(&vec, value, data->sz, data->vals);
+    }
+
+    //cs165_log(stdout, "select: sz %d, low %d, high %d, num_tuples %d\n", data->sz, low, high, num_tuples);
+    struct cvec *ret = malloc(sizeof(struct cvec));
+    ret->num_tuples = num_tuples;
+    ret->values = vec;
+    ret->type = VECTOR;
+    *r = ret;
+
+    return st;
 }
 
 static
@@ -483,11 +604,16 @@ static status col_fetch(struct column *col, struct cvec *v, struct cvec **r) {
     return st;
 }
 
-//TODO reconstruct more than 1 result: design!!!
 static
-struct status reconstruct(struct cvec *vecs, struct cvec **r) {
+struct status reconstruct(struct cvec **vecs, size_t count, struct cvec ***r) {
+    (void) count;
     status st;
     *r = vecs;
+    /*
+    for (int j = 0; j < 10; j++) {
+        cs165_log(stderr, "%d,%d\n", vecs[0]->values[j], vecs[1]->values[j]);
+    }
+    */
     return st;
 }
 
@@ -530,7 +656,6 @@ long double find_avg(int *vals, size_t sz) {
     avg = (long double) sum / sz;
 
     fprintf(stderr, "avg = %Lf\n", avg);
-    //cs165_log(stderr, "average = %Lf\n", avg->dval);
     return avg;
 }
 
@@ -551,7 +676,7 @@ long double find_avg_res(void *vals, size_t sz, enum result_type type) {
 
     avg = (long double) sum / sz;
 
-    fprintf(stderr, "avg = %Lf\n", avg);
+    fprintf(stderr, "avg res = %Lf\n", avg);
     //cs165_log(stderr, "average = %Lf\n", avg->dval);
     return avg;
 }
@@ -567,7 +692,7 @@ long int find_max_res(void *vals, size_t sz, bool sorted, enum result_type type)
     if (!sorted) {
         for (size_t j = 0; j < sz-1; j++) {
             long int v = values[j];
-            if (v >= 2019184347) cs165_log(stderr, "\t%ld\n", v);
+            //if (v >= 2019184347) cs165_log(stderr, "\t%ld\n", v);
             max = (v > max) ? v : max;
         }
     }
@@ -655,6 +780,7 @@ int aggregate_min(struct column *c) {
 }
 static
 struct status aggregate_col(struct column *c, enum aggr agg, struct cvec **r) {
+    cs165_log(stderr, "called aggregate_col\n");
     status st;
 
     struct cvec *val = malloc(sizeof(struct cvec));
@@ -671,7 +797,7 @@ struct status aggregate_col(struct column *c, enum aggr agg, struct cvec **r) {
             val->type = LONG_VAL;
             break;
         case AVG:
-            val->ival = find_avg(c->data.vals, c->data.sz);
+            val->dval = find_avg(c->data.vals, c->data.sz);
             val->type = DOUBLE_VAL;
             break;
     }
@@ -717,6 +843,8 @@ struct status sub_vecs(struct cvec *vals1, struct cvec *vals2, struct cvec **r) 
 
     return st;
 }
+
+//////////////////////////////////////////////////////////////////////////////
 
 static
 struct status nl_join(struct cvec *vals1, struct cvec *pos1,
@@ -766,6 +894,118 @@ struct status nl_join(struct cvec *vals1, struct cvec *pos1,
     return st;
 }
 
+int probe(struct bucket *b, int val) {
+    int min = 0;
+    int max = b->length - 1;
+    int mid = 0;
+
+    if (b->length == 0) return -1;
+
+    if (b->length == 1 && b->items[min].val == val) return min;
+
+    if (b->items[max].val < val) return -1;
+
+    while(max >= min) {
+        mid = (min + max) / 2;
+
+        if (b->items[mid].val == val){
+            int v = mid;
+            while(v > 0 && b->items[v-1].val == val)
+                v--;
+            return v;
+        } else if (val > b->items[mid].val)
+            min = mid + 1;
+        else if (val < b->items[mid].val)
+            max = mid - 1;
+    }
+
+    return -1;
+}
+
+static inline
+int hash(int i) {
+    return i & (NUMBUCKETS - 1);
+}
+
+static
+struct status simple_hash_join(struct cvec *v1, struct cvec *p1,
+                               struct cvec *v2, struct cvec *p2,
+                               struct cvec **rl, struct cvec **rr) {
+
+    struct status st;
+
+    int *sdata = v1->num_tuples < v2->num_tuples ? v1->values : v2->values;
+    int *spos = p1->num_tuples < p2->num_tuples ? p1->values : p2->values;
+    size_t slen = p1->num_tuples < p2->num_tuples ? p1->num_tuples : p2->num_tuples;
+
+    int *rdata = v1->num_tuples < v2->num_tuples ? v2->values : v1->values;
+    int *rpos = p1->num_tuples < p2->num_tuples ? p2->values : p1->values;
+    size_t rlen = p1->num_tuples < p2->num_tuples ? p2->num_tuples : p1->num_tuples;
+
+    int bucket_count[NUMBUCKETS] = {0};
+
+    for (size_t i = 0; i < slen; i++) {
+        int v = sdata[i];
+        int k = hash(v);
+        bucket_count[k]++;
+    }
+
+    struct bucket *buckets[NUMBUCKETS];
+
+    for (int k = 0; k < NUMBUCKETS; k++) {
+        struct bucket *b = malloc(sizeof *b);
+        b->items = malloc(sizeof(struct sindex) * bucket_count[k]);
+        b->length = 0;
+        buckets[k] = b;
+    }
+
+    for (size_t i = 0; i < slen; i++) {
+        int v = sdata[i];
+        int k = hash(v);
+        struct bucket *b = buckets[k];
+        b->items[b->length].val = v;
+        b->items[b->length++].pos = spos[i];
+    }
+
+    for (int k = 0; k < NUMBUCKETS; k++)
+        if (buckets[k]->length > 1)
+            qsort(buckets[k]->items, buckets[k]->length,
+                  sizeof (struct sindex), sindex_val_cmp);
+
+    int *rmatch = malloc(sizeof(int) * rlen * 2);
+    int *smatch = malloc(sizeof(int) * rlen * 2);
+    int match_count = 0;
+
+    for (size_t r = 0; r < rlen; r++) {
+        int v = rdata[r];
+        int k = hash(v);
+        struct bucket *b = buckets[k];
+        int s = probe(b, v);
+
+        while(s != -1) {
+            smatch[match_count] = b->items[s].pos;
+            rmatch[match_count++] = rpos[r];
+            s = (s + 1 < b->length && b->items[s + 1].val == v) ? s + 1 : -1;
+        }
+    }
+
+    struct cvec *res1 = malloc(sizeof *res1);
+    res1->values = realloc(smatch, sizeof(int) * match_count);
+    res1->num_tuples = match_count;
+    res1->type = VECTOR;
+    *rl = res1;
+
+    struct cvec *res2 = malloc(sizeof *res2);
+    res2->values = realloc(rmatch, sizeof(int) * match_count);
+    res2->num_tuples = match_count;
+    res2->type = VECTOR;
+    *rr = res2;
+
+    cs165_log(stdout, "num_tuples in nl_join: %d and %d\n", match_count);
+
+    return st;
+}
+
 static
 void load_columns(db_operator *q) {
     switch(q->type) {
@@ -773,7 +1013,7 @@ void load_columns(db_operator *q) {
             for (size_t j = 0; j < q->tables->col_count; j++)
                 load_column(&q->tables->col[j]);
             break;
-        case(SELECT) : case(PROJECT) : case(AGGREGATE_COL):
+        case(SELECT) : case(PROJECT) : case(AGGREGATE_COL) : case(POINT_SELECT):
             load_column(q->columns);
             break;
         default: break;
@@ -785,7 +1025,7 @@ void load_columns(db_operator *q) {
  * on what the return type should be, maybe a result struct, and then have
  * a serialization into a string message).
  **/
-struct status execute_db_operator(db_operator *query, struct cvec **result) {
+struct status execute_db_operator(db_operator *query, struct cvec ***result) {
     struct status st = { ERROR, "query is NULL" };
     if (query == NULL) return st;
 
@@ -805,10 +1045,13 @@ struct status execute_db_operator(db_operator *query, struct cvec **result) {
             free(query->value1);
             break;
         case(TUPLE):
-            st = reconstruct(query->vals1, result);
+            st = reconstruct(query->tuple, query->tuple_count, result);
             break;
         case(SELECT):
             st = col_scan(query->range.low, query->range.high, query->columns, &r);
+            break;
+        case(POINT_SELECT):
+            st = select_col(query->select, query->columns, &r);
             break;
         case(PROJECT):
             st = col_fetch(query->columns, query->pos1, &r);
@@ -832,12 +1075,15 @@ struct status execute_db_operator(db_operator *query, struct cvec **result) {
             st = sub_vecs(query->vals1, query->vals2, &r);
             break;
         case(JOIN):
-            st = nl_join(query->vals1, query->pos1, query->vals2, query->pos2, &r, &r2);
+            //st = nl_join(query->vals1, query->pos1, query->vals2, query->pos2, &r, &r2);
+            st = simple_hash_join(query->vals1, query->pos1, query->vals2, query->pos2, &r, &r2);
+            (void)nl_join;
+            break;
+        case(UPDATE):
+            st = update_col(query->select, query->columns, query->pos1);
             break;
         case(HASH_JOIN): break;
-
         case(DELETE): break;
-        case(UPDATE): break;
 
         case(MERGE_JOIN): break;
         default: break;

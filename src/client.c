@@ -160,6 +160,32 @@ void send_file(int client_socket, message *send_message) {
     log_info("\tunmapped");
 }
 
+void display(int nbytes, char (*payload)[nbytes], enum result_type payload_type, int count) {
+    if (payload_type == DOUBLE_VAL) {
+        long double *vals = (long double *)payload;
+        for (size_t i = 0; i < nbytes / sizeof(long double); i++)
+            fprintf(stderr, "%Lf\n", vals[i]);
+    } else if (payload_type == VECTOR) {
+        int *vec = (int *)payload;
+        size_t items_in_col = (nbytes / sizeof(int)) / count;
+        for (size_t r = 0; r < items_in_col; r++) {
+            for (int c = 0; c < count; c++) {
+                if (c == count - 1)
+                    fprintf(stderr, "%d\n", vec[r + c * items_in_col]);
+                else
+                    fprintf(stderr, "%d,", vec[r + c * items_in_col]);
+            }
+        }
+    } else if (payload_type == LONG_VECTOR || payload_type == LONG_VAL) {
+        long int *vals = (long int *)payload;
+        for (size_t i = 0; i < nbytes / sizeof(long int); i++)
+            fprintf(stderr, "%ld\n", vals[i]);
+    } else {
+        log_err("received unknown payload response\n");
+        exit(1);
+    }
+}
+
 void send_command(int client_socket, message *send_message) {
     // Only process input that is greater than 1 character.
     // Ignore things such as new lines.
@@ -185,33 +211,21 @@ void send_command(int client_socket, message *send_message) {
 
         // Always wait for server response (even if it is just an OK message)
         if ((len = recv(client_socket, &recv_message, sizeof(message), 0)) > 0) {
-            int num_bytes = (int) recv_message.length;
-            //log_info("num_bytes = %d, status = %d\n", num_bytes, recv_message.status);
+            int count = recv_message.count;
+            int num_bytes = recv_message.length;
+            //log_info("num_bytes = %d, status = %d, count = %d\n", num_bytes, recv_message.status, count);
             if (recv_message.status == OK_WAIT_FOR_RESPONSE && num_bytes > 0) {
-                // Calculate number of bytes in response package
-                char payload[num_bytes + 1];
-                payload[num_bytes] = '\0';
-                // Receive the payload and print it out
-                // TODO two buffers, one local, another full or just print out
-                if ((len = recv(client_socket, payload, num_bytes, 0)) > 0) {
-                    if (recv_message.payload_type == DOUBLE_VAL) {
-                        long double *vals = (double long *)payload;
-                        for (size_t i = 0; i < num_bytes / sizeof(long double); i++)
-                            fprintf(stderr, "%Lf\n", vals[i]);
-                    } else if (recv_message.payload_type == VECTOR) {
-                        int *vals = (int *)payload;
-                        for (size_t i = 0; i < num_bytes / sizeof(int); i++)
-                            fprintf(stderr, "%d\n", vals[i]);
-                    } else if (recv_message.payload_type == LONG_VECTOR ||
-                               recv_message.payload_type == LONG_VAL) {
-                        long int *vals = (long int *)payload;
-                        for (size_t i = 0; i < num_bytes / sizeof(long int); i++)
-                            fprintf(stderr, "%ld\n", vals[i]);
-                    } else {
-                        log_err("received unknown payload response\n");
+                int collen = num_bytes / count;
+                char payload[count][collen];
+                for (int c = 0; c < count; c++) {
+                    len = recv(client_socket, payload[c], collen, MSG_WAITALL);
+                    //log_info("debug len = %d collen = %d\n", len, collen);
+                    if (len < 0) {
+                        log_err("Failed to receive message.");
                         exit(1);
                     }
                 }
+                display(num_bytes, payload, recv_message.payload_type, count);
             }
         } else {
             if (len < 0) {
@@ -224,7 +238,7 @@ void send_command(int client_socket, message *send_message) {
     }
 }
 
-const char *load = "load";
+char const * load = "load";
 
 int main(void) {
     int client_socket = connect_client();
@@ -232,7 +246,7 @@ int main(void) {
         exit(1);
     }
 
-    message send_message = { 0, 0, 0, 0 };
+    message send_message = { 0, 0, 0, 0, 0 };
 
     // Always output an interactive marker at the start of each command if the
     // input is from stdin. Do not output if piped in from file or from other fd

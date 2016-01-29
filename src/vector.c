@@ -12,21 +12,18 @@ void vector_free(struct vec *v) {
     free(v->vals);
 }
 
-bool vector_init(struct vec *v, size_t capacity) {
+void vector_init(struct vec *v, size_t capacity) {
     v->sz = 0;
     v->capacity = (capacity < DEFAULT_CAPACITY) ? DEFAULT_CAPACITY : capacity;
     v->vals = malloc(sizeof(int) * v->capacity);
-    if (v->vals == NULL) return true;
-    return false;
+    assert(v->vals);
 }
 
 struct vec *vector_create(size_t capacity) {
     struct vec *v = malloc(sizeof *v);
-    bool err = vector_init(v, capacity);
-    if (err) {
-	free(v);
-	return NULL;
-    }
+    assert(v);
+    vector_init(v, capacity);
+    assert(v->vals);
     return v;
 }
 

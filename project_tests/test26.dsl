@@ -21,4 +21,3 @@ f3=fetch(db1.tbl4.col1,s3)
 f4=fetch(db1.tbl5.col1,s4)
 
 tuple(f3,f4)
-

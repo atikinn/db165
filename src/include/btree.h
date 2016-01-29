@@ -16,6 +16,7 @@ extern bool btree_init(struct btree *bt, bool clustered);
 extern void btree_load(struct btree *bt, struct vec *v);
 extern struct vec *btree_search(struct btree *bt, int k);
 extern struct vec *btree_rsearch(struct btree *bt, int lo, int hi);
+extern void btree_update(struct btree *bt, int k, int id);
 
 extern void btree_traverse(struct btree *bt);
 extern struct btnode *btree_next_leaf(struct btnode *iter);

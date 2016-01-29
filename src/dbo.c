@@ -153,7 +153,6 @@ db_operator *cmd_rel_insert(size_t argc, const char **argv) {
     dbo->tables = map_get(argv[0]);
     for (size_t i = 0; i < argc-2; i++)
         dbo->value1[i] = strtol(argv[i+1], NULL, 10);
-    //dbo->vecs_size = 0;
     return dbo;
 }
 
@@ -170,6 +169,13 @@ long convert_value(const char *num, bool low) {
 db_operator *cmd_select(size_t argc, const char **argv) {
     db_operator *dbo = malloc(sizeof *dbo);
     if (dbo == NULL) return NULL;
+
+    if (argc == 4) {
+        dbo->columns = map_get(argv[0]);
+        dbo->select = convert_value(argv[1], false);
+        dbo->assign_var = strdup(argv[2]);
+        dbo->type = POINT_SELECT;
+    }
 
     if (argc == 5) {
         dbo->columns = map_get(argv[0]);
@@ -212,21 +218,20 @@ db_operator *cmd_fetch(size_t argc, const char **argv) {
     return dbo;
 }
 
-/* TODO: 2. can't tuple a column - need a separate tuple for that */
 db_operator *cmd_tuple(size_t argc, const char **argv) {
-    (void)argc;
+    size_t tuple_count = argc - 1;
     db_operator *dbo = malloc(sizeof *dbo);
     if (dbo == NULL) return NULL;
-    dbo->vals1 = malloc(argc * sizeof *(dbo->vals1));
-    assert(dbo->vals1);
-    for (size_t j = 0; j < argc; j++) {
+    dbo->tuple = malloc(tuple_count * sizeof *dbo->tuple);
+    assert(dbo->tuple);
+    for (size_t j = 0; j < tuple_count; j++) {
+        assert(map_gettype(argv[j]) == RESULT);
         struct cvec *res = map_get(argv[j]);
-        assert(res->type == RESULT);
-        dbo->vals1[j] = *res;
+        dbo->tuple[j] = res;
     }
     dbo->type = TUPLE;
-    dbo->tuple_count = argc;
-    dbo->msgtype = dbo->vals1->type;
+    dbo->tuple_count = tuple_count;
+    dbo->msgtype = dbo->tuple[0]->type;
     return dbo;
 }
 
@@ -245,7 +250,6 @@ db_operator *cmd_load(char *rawdata) {
 
     cs165_log(stderr, "%s\n", tbl_name);
     dbo->tables = map_get(tbl_name);
-    //dbo->vecs_size = 0;
     return dbo;
 }
 
@@ -348,15 +352,22 @@ db_operator *cmd_join(size_t argc, const char **argv) {
     return dbo;
 }
 
+db_operator *cmd_update(size_t argc, const char **argv) {
+    (void)argc;
+    db_operator *dbo = malloc(sizeof *dbo);
+    if (dbo == NULL) return NULL;
+
+    dbo->columns = map_get(argv[0]);
+    dbo->pos1 = map_get(argv[1]);
+    dbo->select = convert_value(argv[2], false);
+    dbo->type = UPDATE;
+
+    return dbo;
+}
+
 //////////////////////////////////////////////////////////////////////////////
 
 db_operator *cmd_rel_delete(size_t argc, const char **argv) {
-    (void)argc;
-    (void)argv;
-    return NULL;
-}
-
-db_operator *cmd_update(size_t argc, const char **argv) {
     (void)argc;
     (void)argv;
     return NULL;

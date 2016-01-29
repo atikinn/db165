@@ -153,7 +153,7 @@ void persist_index(struct column *col, const char *tname) {
 	    cs165_log(stderr, "%s: %s\n", tname, path);
 	    persist_data(col->index->index, col->data.sz, sizeof (struct sindex), path);
 	    if (path != buf) free(path);
-	case BTREE: break; // TODO: extremely expensive, easier to fully reconstruct
+	case BTREE: break; // TODO: expensive, easier to fully reconstruct
 	case IDX_INVALID: break;
     }
 }
@@ -166,8 +166,8 @@ void persist_col(struct column *col, const char *tname) {
     char *path = vbsnprintf(buf, sizeof buf, "%s/%s.%s.bin", DBPATH, tname, col->name);
     cs165_log(stderr, "%s: %s\n", tname, path);
     persist_data(col->data.vals, col->data.sz, sizeof (int), path);
-    if (path != buf)
-	free(path);
+    if (path != buf) free(path);
+    if (col->index) persist_index(col, col->table->name);
 }
 
 static inline
@@ -176,9 +176,8 @@ void persist_db(struct db *db) {
         struct table *tbl = &db->tables[i];
         for (size_t j = 0; j < tbl->col_count; j++) {
             struct column *col = &tbl->col[j];
-            cs165_log(stderr, "%d = %d\n", tbl->length, col->data.vals[tbl->length-1]);
+            //cs165_log(stderr, "%d = %d\n", tbl->length, col->data.vals[tbl->length-1]);
             persist_col(col, tbl->name);
-	    if (col->index) persist_index(col, tbl->name);
         }
     }
 }
@@ -243,8 +242,9 @@ size_t db_meta(struct db *db, char *meta, size_t sz, size_t rec_size) {
 }
 
 static inline
-char *resize_meta(char *meta, size_t capacity) {
-    char *tmp = realloc(meta, sizeof(char) * capacity * 2);
+char *resize_meta(char *meta, size_t *capacity) {
+    *capacity = *capacity * 2;
+    char *tmp = realloc(meta, *capacity * sizeof(char));
     assert(tmp);
     return tmp;
 }
@@ -257,20 +257,20 @@ size_t mk_metadata(struct db *db, char **ret) {
 
     size_t rec_size = get_db_meta_sz(db);
     if (sz + rec_size >= capacity)
-	meta = resize_meta(meta, capacity);
+	meta = resize_meta(meta, &capacity);
     sz += db_meta(db, meta, sz, rec_size);
 
     for (size_t i = 0; i < db->table_count; i++) {
         struct table *tbl = &db->tables[i];
 	rec_size = get_tbl_meta_sz(tbl);
         if (sz + rec_size >= capacity)
-	    meta = resize_meta(meta, capacity);
+	    meta = resize_meta(meta, &capacity);
         sz += tbl_meta(tbl, meta, sz, rec_size);
         for (size_t j = 0; j < tbl->col_count; j++) {
             struct column *col = &tbl->col[j];
 	    rec_size = get_col_meta_sz(col);
             if (sz + rec_size >= capacity)
-		meta = resize_meta(meta, capacity);
+		meta = resize_meta(meta, &capacity);
             sz += col_meta(col, meta, sz, rec_size);
         }
     }
@@ -303,10 +303,11 @@ void persist_metadata(struct db *db) {
 }
 
 static
-void free_index(struct column *col) {
-    switch(col->index->type) {
-	case SORTED: sindex_free(col->index->index); return;
-	case BTREE: btree_free(col->index->index); return;
+void free_index(void *index, enum index_type type) {
+    if (index == NULL) return;
+    switch(type) {
+	case SORTED: sindex_free(index); return;
+	case BTREE: btree_free(index); return;
 	case IDX_INVALID: assert(false);
     }
 }
@@ -317,8 +318,9 @@ void clean_db(struct db *db) {
 	struct table *tbl = &db->tables[i];
 	for (size_t j = 0; j < tbl->col_count; j++) {
 	    struct column *col = &tbl->col[j];
-	    vector_free(&col->data);
-	    if (col->index) free_index(col);
+	    if (col->data.vals) vector_free(&col->data);
+	    if (col->index) free_index(col->index->index, col->index->type);
+	    free(col->index);
 	    free(col->name);
 	}
 	free(tbl->name);
@@ -345,7 +347,7 @@ struct column restore_col(char *record, struct table *tbl) {
     struct col_record *rec = (struct col_record *) record;
     bool clustered = tbl->clustered == tbl->col_count;
     struct column col = { .name = strdup(rec->name), .table = tbl, .index = NULL,
-			  .clustered = clustered, .status = ONDISK };
+			  .clustered = clustered, .status = ONDISK, .data = { 0, 0, NULL } };
     cs165_log(stderr, "clustered = %d\n", col.clustered);
     enum index_type idx_type = rec->idx_type - '0';
     switch(idx_type) {
@@ -357,7 +359,6 @@ struct column restore_col(char *record, struct table *tbl) {
 	    col.index->index = NULL;
 	    break;
     }
-    vector_init(&col.data, tbl->length);
     return col;
 }
 
@@ -470,6 +471,7 @@ void restore_col_data(struct column *col) {
 
     char *data;
     off_t sz = filemap(path, &data, PROT_READ);
+    vector_init(&col->data, col->table->length);
     memcpy(col->data.vals, data, sz);
     col->data.sz = sz / sizeof (int);
     col->data.capacity = col->data.sz;
@@ -479,6 +481,8 @@ void restore_col_data(struct column *col) {
 }
 
 void load_column(struct column *col) {
+    if (col->status == INMEMORY || col->status == MODIFIED) return;
+
     restore_col_data(col);
     if (col->index) {
 	switch(col->index->type) {
@@ -516,10 +520,12 @@ void restore_database(void) {
 	db_set_current(db);
 	(void)restore_data;	// Can be used to restore eagerly
 	//restore_data(db);
+	/*
 	struct table *tbl = &db->tables[0];
 	for (size_t j = 0; j < tbl->col_count; j++)
 	    fprintf(stderr, "%d ", tbl->col[j].data.vals[tbl->length-1]);
 	fprintf(stderr, "\n");
+	*/
     }
     return;
 }

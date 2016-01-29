@@ -21,6 +21,7 @@ typedef enum message_status {
 typedef struct message {
     message_status status;
     int length;
+    int count;
     enum result_type payload_type;
     char *payload;
 } message;
